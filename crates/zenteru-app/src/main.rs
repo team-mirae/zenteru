@@ -18,10 +18,27 @@ fn main() {
         }
         Some("--help" | "-h") => {
             println!(
-                "{}\n\nUSAGE:\n  zenteru              open a window\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru --version",
+                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru --version",
                 zenteru_text::brand::full_name()
             );
         }
-        _ => view::run(),
+        Some(other) if other.starts_with('-') && other != "-psn" && !other.starts_with("-psn_") => {
+            eprintln!("zenteru: unknown option {other}; see --help");
+            std::process::exit(2);
+        }
+        _ => {
+            // Typed in a shell: hand off to LaunchServices so the app isn't
+            // a child of that terminal (and focuses an existing instance).
+            unsafe extern "C" {
+                fn isatty(fd: i32) -> i32;
+            }
+            if std::env::var_os("ZENTERU_DEBUG").is_none() && unsafe { isatty(0) } == 1 {
+                if let Some(bundle) = platform::app_bundle() {
+                    let ok = std::process::Command::new("/usr/bin/open").arg("-a").arg(&bundle).status().is_ok_and(|s| s.success());
+                    std::process::exit(if ok { 0 } else { 1 });
+                }
+            }
+            view::run()
+        }
     }
 }

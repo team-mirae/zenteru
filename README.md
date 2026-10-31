@@ -46,6 +46,27 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   - The app itself depends only on the objc2 bindings for AppKit, Metal,
     CoreText and CoreGraphics.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/team-mirae/zenteru/main/install.sh | sh
+```
+
+This installs the latest release's universal `zenteru.app` into
+`/Applications` (or `~/Applications` when `/Applications` isn't writable),
+verifies its SHA-256 checksum and code signature, and links the `zenteru`
+command into `~/.local/bin`. No sudo is needed. Set the variables on the
+`sh` side of the pipe to change where things go:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/team-mirae/zenteru/main/install.sh | ZENTERU_VERSION=v0.1.0 ZENTERU_APP_DIR=~/Applications sh
+```
+
+`zenteru` opens the app (or focuses it), and `zenteru sudo-auth` turns on
+Touch ID or YubiKey for sudo. Builds are on the
+[releases page](https://github.com/team-mirae/zenteru/releases). macOS 13
+or later is required.
+
 ## Plugins
 
 Plugins are Python 3.11+, use only the standard library, and talk to

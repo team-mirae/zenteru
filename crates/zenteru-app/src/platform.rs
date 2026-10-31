@@ -101,7 +101,8 @@ pub fn resources_dir() -> PathBuf {
     if let Ok(p) = std::env::var("ZENTERU_RESOURCES") {
         return PathBuf::from(p);
     }
-    if let Ok(exe) = std::env::current_exe() {
+    // Resolve symlinks (~/.local/bin/zenteru → …/zenteru.app/Contents/MacOS/zenteru).
+    if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
         if let Some(res) = exe.parent().and_then(Path::parent).map(|c| c.join("Resources")) {
             if res.join("plugins").is_dir() {
                 return res;
@@ -158,4 +159,11 @@ pub fn find_python() -> Option<PathBuf> {
 
 pub fn ns_array_strings(a: &NSArray<NSString>) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
+}
+
+/// The enclosing `.app` bundle of the running binary, if any.
+pub fn app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bundle = exe.parent()?.parent()?.parent()?;
+    (bundle.extension().is_some_and(|e| e == "app")).then(|| bundle.to_path_buf())
 }

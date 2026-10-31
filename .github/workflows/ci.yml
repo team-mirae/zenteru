@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - name: Rust tests
+        run: cargo test --workspace --locked
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s python/tests
+          python3 -m unittest discover -s plugins/hmxv/tests
+          python3 -m unittest discover -s plugins/complete/tests

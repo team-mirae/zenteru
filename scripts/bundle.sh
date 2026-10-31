@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build dist/zenteru.app and sign it.
+# Build dist/zenteru.app and sign it. Also used by the release workflow.
 #
 #   scripts/bundle.sh            release build, signed with the first
 #                                "Apple Development" identity in the keychain
@@ -8,12 +8,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-cargo build --release -p zenteru-app
+# ZENTERU_BINARY=path uses a prebuilt (e.g. universal) binary instead.
+BINARY="${ZENTERU_BINARY:-}"
+if [ -z "$BINARY" ]; then
+    cargo build --release -p zenteru-app
+    BINARY=target/release/zenteru
+fi
 
 APP=dist/zenteru.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/zenteru "$APP/Contents/MacOS/zenteru"
+cp "$BINARY" "$APP/Contents/MacOS/zenteru"
 sed "s/__VERSION__/$VERSION/g" resources/Info.plist > "$APP/Contents/Info.plist"
 [ -f resources/zenteru.icns ] && cp resources/zenteru.icns "$APP/Contents/Resources/" && \
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string zenteru" "$APP/Contents/Info.plist"

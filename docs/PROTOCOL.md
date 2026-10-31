@@ -117,6 +117,24 @@ In shell mode (not in the alternate screen) zenteru shows a gutter:
   endian) mod 36^3)`, zero-padded, uppercase — `zenteru.line_code(id)` in
   Python. Codes can repeat across a long scrollback; `rel` never does.
 
+### Gutter rain (custom drivers)
+While a non-shell program has the terminal the gutter shows "rain" in one of
+four styles: `drops` (default), `blocks` (a fixed matrix whose block colours
+change), `custom` (driven by a plugin) or `off`. Built-ins `@rain-drops`,
+`@rain-blocks`, `@rain-custom`, `@rain-off` switch it (saved in
+`~/Library/Application Support/zenteru/settings.json`; `ZENTERU_RAIN`
+overrides).
+
+| method | params | result |
+|---|---|---|
+| `gutter.get_size` | – | `{width, height, active, block_px, style}` — the block matrix of the key window |
+| `gutter.set_style` | `{style}` | `{}` |
+| `gutter.set_frame` | `{width, height, rgba?: base64, cells?: [[cell]]}` | `{}` — `rgba` is width×height×4 bytes, row-major; a `cell` is `"#rrggbb[aa]"`, `[r,g,b(,a)]` or null. Scaled to the matrix if sizes differ. |
+
+Subscription kind `gutter` sends `{width, height, active, style}` when the
+size or `active` changes; drivers should only send frames while `active`.
+A `custom` gutter with no frame for 3 s falls back to `blocks`.
+
 ### setenvvar store
 Each session has a private env store. Its file lives at
 `$ZENTERU_SESSION_DIR/env` (dir 0700, file 0600, deleted when the session

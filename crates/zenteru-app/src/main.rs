@@ -4,6 +4,7 @@
 mod app;
 mod font;
 mod gutter;
+mod settings;
 mod magic;
 mod platform;
 mod render;

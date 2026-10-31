@@ -63,6 +63,7 @@ from .registration import (
     TitleRequest,
 )
 from .runner import run_forever, run_until_complete
+from .gutter import GutterDriver, async_get_gutter_size, async_set_gutter_style, encode_matrix
 from .screen import LineContents, LineInfo, Point, ScreenContents, Size, line_code, rel_label
 from .session import Session, SessionEnv
 from .tab import Tab
@@ -73,6 +74,10 @@ from .window import Frame, Window
 __version__ = "0.1.0"
 
 __all__ = [
+    "GutterDriver",
+    "async_get_gutter_size",
+    "async_set_gutter_style",
+    "encode_matrix",
     "line_code",
     "rel_label",
     "AgentHelper", "AgentRequest", "Alert", "App", "async_register_agent", "AuthenticationError", "Command", "CommandInvocation", "Connection",

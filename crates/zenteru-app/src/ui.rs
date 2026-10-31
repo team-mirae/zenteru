@@ -105,10 +105,13 @@ fn elide(s: &str, max: usize) -> String {
 pub fn draw(app: &mut App, wid: &str) {
     let Some(wi) = app.win_index(wid) else { return };
     let magic_items = app.windows[wi].palette.as_ref().map(|p| app.magic_items(&p.text)).unwrap_or_default();
+    let rain_style = app.rain_style;
+    let rain_frame = app.gutter_frame.clone().filter(|f| f.3.elapsed().as_secs() < 3);
     let App { renderer, windows, sessions, panels, .. } = app;
     let win = &mut windows[wi];
     win.dirty = false;
     win.rain = false;
+    win.rain_shown = false;
     let l: Layout = win.layout.clone();
     if l.w < 10.0 || l.h < 10.0 {
         return;
@@ -289,9 +292,21 @@ pub fn draw(app: &mut App, wid: &str) {
                 if app_mode || t.alt_screen() {
                     let rain_h = (l.rows.saturating_sub(2)) as f32 * ch - 4.0 * s;
                     let tsec = started().elapsed().as_secs_f32();
-                    crate::gutter::rain(&mut f, gx, l.term_y, gw, rain_h, ch, s, tsec, crate::gutter::reduce_motion());
+                    let still = crate::gutter::reduce_motion();
+                    use crate::gutter::RainStyle;
+                    match (rain_style, &rain_frame) {
+                        (RainStyle::Drops, _) => crate::gutter::rain(&mut f, gx, l.term_y, gw, rain_h, ch, s, tsec, still),
+                        (RainStyle::Custom, Some((fw, fh, px, _))) => crate::gutter::custom_rain(&mut f, gx, l.term_y, gw, rain_h, cw, s, *fw, *fh, px),
+                        // Custom without a live driver falls back to blocks.
+                        (RainStyle::Blocks | RainStyle::Custom, _) => crate::gutter::block_rain(&mut f, gx, l.term_y, gw, rain_h, cw, s, tsec, still),
+                        (RainStyle::Off, _) => {}
+                    }
+                    let (mc, mr, _, _) = crate::gutter::matrix_dims(gw, rain_h, cw, s);
+                    win.matrix = (mc, mr);
+                    win.rain_shown = !matches!(rain_style, RainStyle::Off);
                     crate::gutter::clock(renderer, &mut f, gx, clock_last_row, gw, cw, ch, scale);
-                    win.rain = true;
+                    // Animate unless it's off or a custom driver paces it with its frames.
+                    win.rain = !matches!(rain_style, RainStyle::Off) && !(rain_style == RainStyle::Custom && rain_frame.is_some());
                 } else {
                     let anchor = zenteru_term::lineref::anchor(&t);
                     let mut last_numbered = 0usize;

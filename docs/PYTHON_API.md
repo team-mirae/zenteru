@@ -149,3 +149,30 @@ Choices the Python side makes where PROTOCOL.md is silent:
   directory (for `main.py`) or script name.
 * `session.get_variable` with an unknown name is expected to return
   `not_found`; the client maps that to `None`.
+
+
+## Gutter rain drivers
+
+While a program other than the shell has the terminal, the gutter shows
+rain. With style `custom`, your plugin paints it as a block matrix:
+
+```python
+import math, zenteru
+
+def plasma(width, height, t):
+    return [[(int(128 + 127 * math.sin(x / 2 + t)), 90,
+              int(128 + 127 * math.cos(y / 6 - t)), 230)
+             for x in range(width)] for y in range(height)]
+
+async def main(connection):
+    await zenteru.GutterDriver(plasma, fps=20).async_run(connection)
+
+zenteru.run_forever(main)
+```
+
+`frame(width, height, t)` returns `height` rows of `width` cells. A cell is
+`(r, g, b)` or `(r, g, b, a)` (0–255), `"#rrggbb"` / `"#rrggbbaa"`, or `None`.
+It can also be a coroutine function. The driver switches the style to
+`custom` while it runs, only renders while the rain is showing, and puts the
+previous style back on `stop()`. Other helpers: `async_get_gutter_size`,
+`async_set_gutter_style`, `encode_matrix`.

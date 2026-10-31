@@ -111,6 +111,10 @@ pub struct Win {
     /// The gutter is raining: redraw at a gentle frame rate.
     pub rain: bool,
     pub last_frame: Option<Instant>,
+    /// Block-matrix size of the gutter rain area (columns, rows).
+    pub matrix: (u32, u32),
+    /// The gutter is showing rain (a custom driver should send frames).
+    pub rain_shown: bool,
 }
 
 impl Win {
@@ -278,6 +282,10 @@ pub struct App {
     /// Shell-mode line gutter (relative index + line code).
     pub gutter: bool,
     last_minute: i64,
+    pub rain_style: crate::gutter::RainStyle,
+    /// Latest frame from a custom gutter driver: (width, height, RGBA, when).
+    pub gutter_frame: Option<(u32, u32, std::rc::Rc<Vec<u8>>, Instant)>,
+    last_gutter_event: (u32, u32, bool, &'static str),
     last_screen_emit: Instant,
     screen_emit_due: Vec<String>,
 }
@@ -325,6 +333,13 @@ impl App {
             pending_alerts: Vec::new(),
             gutter: std::env::var("ZENTERU_GUTTER").map_or(true, |v| v != "0"),
             last_minute: 0,
+            rain_style: std::env::var("ZENTERU_RAIN")
+                .ok()
+                .or_else(|| crate::settings::load().get("rain").as_str().map(String::from))
+                .and_then(|v| crate::gutter::RainStyle::parse(&v))
+                .unwrap_or(crate::gutter::RainStyle::Drops),
+            gutter_frame: None,
+            last_gutter_event: (0, 0, false, ""),
             last_screen_emit: Instant::now(),
             screen_emit_due: Vec::new(),
         }
@@ -372,6 +387,8 @@ impl App {
             dirty: true,
             rain: false,
             last_frame: None,
+            matrix: (0, 0),
+            rain_shown: false,
         };
         self.windows.push(win);
         self.relayout(&wid);
@@ -531,6 +548,8 @@ impl App {
                     dirty: true,
                     rain: false,
                     last_frame: None,
+                    matrix: (0, 0),
+                    rain_shown: false,
                 });
                 wid
             }
@@ -649,6 +668,15 @@ impl App {
             };
             if needs {
                 crate::ui::draw(self, &id);
+            }
+        }
+        // Tell custom gutter drivers about size / activity changes.
+        let key = self.key_window.clone().and_then(|k| self.windows.iter().find(|w| w.id == k)).or(self.windows.first());
+        if let Some(w) = key {
+            let now = (w.matrix.0, w.matrix.1, w.rain_shown, self.rain_style.name());
+            if now != self.last_gutter_event {
+                self.last_gutter_event = now;
+                self.emit("gutter", None, Json::obj().with("width", now.0).with("height", now.1).with("active", now.2).with("style", now.3));
             }
         }
         if !self.pending_alerts.is_empty() {
@@ -996,6 +1024,12 @@ impl App {
             }
         }
         self.emit("focus", sid.as_deref(), Json::obj().with("window_id", wid).with("active", active));
+    }
+
+    pub fn set_rain_style(&mut self, style: crate::gutter::RainStyle) {
+        self.rain_style = style;
+        crate::settings::set("rain", style.name());
+        self.windows.iter_mut().for_each(|w| w.dirty = true);
     }
 
     /// Quit once the last window is gone (after at least one existed).
@@ -1374,6 +1408,11 @@ impl App {
                 self.set_font_size(s)
             }
             "reset_font" => self.set_font_size(13.0),
+            n if n.starts_with("rain_") => {
+                if let Some(style) = crate::gutter::RainStyle::parse(&n[5..]) {
+                    self.set_rain_style(style);
+                }
+            }
             "toggle_gutter" => {
                 self.gutter = !self.gutter;
                 let ids: Vec<String> = self.windows.iter().map(|w| w.id.clone()).collect();
@@ -2330,6 +2369,48 @@ impl App {
                     .with("magic_text", pal.map(|p| p.text.clone()))
                     .with("magic_message", pal.and_then(|p| p.message.clone())))
             }
+            "gutter.get_size" => {
+                let key = self.key_window.clone().and_then(|k| self.windows.iter().find(|w| w.id == k)).or(self.windows.first());
+                let (w, h, active, block) = key.map(|w| (w.matrix.0, w.matrix.1, w.rain_shown, (w.layout.cell_w * 0.5).round())).unwrap_or((0, 0, false, 0.0));
+                ok(Json::obj().with("width", w).with("height", h).with("active", active).with("block_px", block).with("style", self.rain_style.name()))
+            }
+            "gutter.set_style" => match p.get("style").as_str().and_then(crate::gutter::RainStyle::parse) {
+                Some(style) => {
+                    self.set_rain_style(style);
+                    empty()
+                }
+                None => Some(Err(("bad_request", "style must be drops, blocks, custom or off".into()))),
+            },
+            "gutter.set_frame" => {
+                let (w, h) = (p.get("width").as_i64().unwrap_or(0), p.get("height").as_i64().unwrap_or(0));
+                if !(1..=512).contains(&w) || !(1..=4096).contains(&h) {
+                    return Some(Err(("bad_request", "width 1..512 and height 1..4096 required".into())));
+                }
+                let (w, h) = (w as u32, h as u32);
+                let n = (w * h * 4) as usize;
+                let px = match (p.get("rgba").as_str(), p.get("cells").as_arr()) {
+                    (Some(b64), _) => zenteru_term::base64::decode(b64).filter(|v| v.len() == n),
+                    (None, rows) if !rows.is_empty() => {
+                        let mut v = vec![0u8; n];
+                        for (y, row) in rows.iter().take(h as usize).enumerate() {
+                            for (x, cell) in row.as_arr().iter().take(w as usize).enumerate() {
+                                let i = (y * w as usize + x) * 4;
+                                v[i..i + 4].copy_from_slice(&parse_cell(cell));
+                            }
+                        }
+                        Some(v)
+                    }
+                    _ => None,
+                };
+                let Some(px) = px else { return Some(Err(("bad_request", "rgba must be base64 of width*height*4 bytes, or cells a list of rows".into()))) };
+                self.gutter_frame = Some((w, h, std::rc::Rc::new(px), Instant::now()));
+                for win in &mut self.windows {
+                    if win.rain_shown {
+                        win.dirty = true;
+                    }
+                }
+                empty()
+            }
             "ui.notify" => {
                 platform::notify(p.get("title").as_str().unwrap_or(""), p.get("body").as_str().unwrap_or(""));
                 empty()
@@ -2402,6 +2483,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.focus_panel", "Focus Side Panel", "panel"),
     ("zenteru.toggle_gutter", "Toggle Line Numbers (ゼロ / codes)", "line-numbers"),
     ("zenteru.sudo_auth", "Set Up Touch ID / YubiKey for sudo…", "sudo-auth"),
+    ("zenteru.rain_drops", "Gutter rain: drops (default)", "rain-drops"),
+    ("zenteru.rain_blocks", "Gutter rain: blocks (fixed matrix)", "rain-blocks"),
+    ("zenteru.rain_custom", "Gutter rain: custom (plugin driver)", "rain-custom"),
+    ("zenteru.rain_off", "Gutter rain: off", "rain-off"),
 ];
 
 fn parse_actions(v: &Json) -> Vec<(String, String)> {
@@ -2576,4 +2661,25 @@ fn line_json(t: &zenteru_term::term::Terminal, l: u64) -> Json {
         .with("id", (id != 0).then(|| lineref::uuid_string(id)))
         .with("landed_ms", (id != 0).then(|| lineref::landed_ms(id)))
         .with("text", row.map(|r| r.text()).unwrap_or_default())
+}
+
+/// A matrix cell from JSON: "#rrggbb", "#rrggbbaa", [r, g, b] or [r, g, b, a]
+/// (0–255), or null for transparent.
+fn parse_cell(v: &Json) -> [u8; 4] {
+    match v {
+        Json::Str(s) => {
+            let h = s.trim_start_matches('#');
+            let byte = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
+            match h.len() {
+                6 => [byte(0).unwrap_or(0), byte(2).unwrap_or(0), byte(4).unwrap_or(0), 255],
+                8 => [byte(0).unwrap_or(0), byte(2).unwrap_or(0), byte(4).unwrap_or(0), byte(6).unwrap_or(0)],
+                _ => [0; 4],
+            }
+        }
+        Json::Arr(a) => {
+            let c = |i: usize, d: f64| a.get(i).and_then(Json::as_f64).unwrap_or(d).clamp(0.0, 255.0) as u8;
+            [c(0, 0.0), c(1, 0.0), c(2, 0.0), c(3, 255.0)]
+        }
+        _ => [0; 4],
+    }
 }

@@ -782,6 +782,28 @@ pub fn draw(app: &mut App, wid: &str) {
         }
     }
 
+    // Toast: a short message in the bottom-right corner for 2.5 s.
+    if let Some((msg, err, since)) = win.toast.clone() {
+        let age = since.elapsed().as_secs_f32();
+        if age < 2.5 {
+            animate = true;
+            let alpha = if age > 2.1 { (2.5 - age) / 0.4 } else { 1.0 };
+            let wc = str_width(&msg) + 2;
+            let tw = wc as f32 * cw;
+            let tx = l.panel_x - tw - 16.0 * s;
+            let ty = l.h - ch - 20.0 * s;
+            f.round_rect(tx, ty - 4.0 * s, tw, ch + 8.0 * s, 8.0 * s, rgba(Rgb(30, 26, 44), 0.95 * alpha));
+            if err {
+                f.gradient_border(tx, ty - 4.0 * s, tw, ch + 8.0 * s, 8.0 * s, 1.5 * s, rgba(pal::ERROR, alpha), rgba(pal::ERROR, alpha));
+            } else {
+                f.gradient_border(tx, ty - 4.0 * s, tw, ch + 8.0 * s, 8.0 * s, 1.5 * s, rgba(pal::GRADIENT_FROM, alpha), rgba(pal::GRADIENT_TO, alpha));
+            }
+            renderer.text(&mut f, &msg, tx + cw, ty, rgba(if err { pal::ERROR } else { pal::FG }, alpha), Style::Bold, wc, None, scale);
+        } else {
+            win.toast = None;
+        }
+    }
+
     win.hits = hits;
     if animate {
         win.dirty = true;

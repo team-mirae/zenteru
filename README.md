@@ -57,6 +57,12 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   prints it above your prompt without touching your history. `zenteru info`
   prints it from any terminal, and `ZENTERU_SPLASH=0` turns off the
   launch splash.
+- **Music from the command line.** `@music` (or `@music-focus`) brings
+  whatever is playing audio to the front, such as a YouTube Music PWA or a
+  Spotify window. Music players outrank games and other noise, and it fails
+  when nothing is playing. `@play`, `@pause`, `@mute`, `@unmute` and
+  `@volume up|down|min|max|0–100|0.00–1.00` work on their own or as
+  subcommands of `@music`, along with `@music next` and `@music prev`.
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.

@@ -225,7 +225,9 @@ program is reading keys itself: an empty shell prompt (exact with shell
 integration; over ssh/mosh or without integration, nothing typed since
 Enter and the cursor right after a `$ % # ❯ » ➜`-style prompt that isn't a
 box-drawn input field), or vim/nvim outside insert/replace/command-line
-mode. ⌘⇧P opens the same bar. `@@` types a literal `@`. `@info`, `@version` and `@zenteru` (reserved:
+mode. ⌘⇧P opens the same bar. `@@` types a literal `@`. `@music [focus|play|pause|mute|unmute|volume …|next|prev]`
+plus `@music-focus`, `@play`, `@pause`, `@mute`, `@unmute`, `@volume …` are
+built in (reserved). `@info`, `@version` and `@zenteru` (reserved:
 no plugin may claim them) print the ゼ splash above the prompt (zenteru
 writes `$ZENTERU_SESSION_DIR/info.ans` and sends `ESC [ 9236 ~` to the
 shell integration, which prints it with `zle -I`). Enter runs a

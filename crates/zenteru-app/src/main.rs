@@ -7,6 +7,7 @@ mod gutter;
 mod settings;
 mod splash;
 mod magic;
+mod music;
 mod platform;
 mod render;
 mod sudo_auth;

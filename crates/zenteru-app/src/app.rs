@@ -122,6 +122,8 @@ pub struct Win {
     pub rain_shown: bool,
     /// A selection drag in the panel input is in progress.
     pub panel_drag: bool,
+    /// A short message in the corner (text, is_error, since).
+    pub toast: Option<(String, bool, Instant)>,
 }
 
 impl Win {
@@ -297,6 +299,9 @@ pub struct App {
     last_gutter_event: (u32, u32, bool, &'static str),
     /// Show the ゼ splash in the first session at launch.
     splash_pending: bool,
+    /// Results of background jobs (music commands): (window, result).
+    jobs_tx: std::sync::mpsc::Sender<(String, Result<String, String>)>,
+    jobs_rx: std::sync::mpsc::Receiver<(String, Result<String, String>)>,
     last_screen_emit: Instant,
     screen_emit_due: Vec<String>,
 }
@@ -318,6 +323,7 @@ impl App {
         set_private(&run_dir);
         set_private(&transient_dir);
         let cookie = zenteru_term::api::random_cookie();
+        let jobs = std::sync::mpsc::channel();
         let api = match ApiServer::start(&rt, cookie.clone(), zenteru_text::brand::VERSION) {
             Ok(a) => Some(a),
             Err(e) => {
@@ -351,6 +357,8 @@ impl App {
                 .unwrap_or(crate::gutter::RainStyle::Drops),
             gutter_frame: None,
             last_gutter_event: (0, 0, false, ""),
+            jobs_tx: jobs.0,
+            jobs_rx: jobs.1,
             splash_pending: std::env::var("ZENTERU_SPLASH").map_or_else(
                 |_| crate::settings::load().get("splash").as_bool().unwrap_or(true),
                 |v| v != "0",
@@ -405,6 +413,7 @@ impl App {
             matrix: (0, 0),
             rain_shown: false,
             panel_drag: false,
+            toast: None,
         };
         self.windows.push(win);
         self.relayout(&wid);
@@ -572,6 +581,7 @@ impl App {
                     matrix: (0, 0),
                     rain_shown: false,
                     panel_drag: false,
+                    toast: None,
                 });
                 wid
             }
@@ -700,6 +710,14 @@ impl App {
                 self.last_gutter_event = now;
                 self.emit("gutter", None, Json::obj().with("width", now.0).with("height", now.1).with("active", now.2).with("style", now.3));
             }
+        }
+        // Background job results → toasts.
+        while let Ok((wid, r)) = self.jobs_rx.try_recv() {
+            let (msg, err) = match r {
+                Ok(m) => (m, false),
+                Err(e) => (e, true),
+            };
+            self.toast(&wid, &msg, err);
         }
         if !self.pending_alerts.is_empty() {
             let alerts = std::mem::take(&mut self.pending_alerts);
@@ -1079,6 +1097,30 @@ impl App {
             }
         }
         self.with_term(&sid, |t| t.feed(art.as_bytes()));
+    }
+
+    /// A short message in the window's corner (red when `error`).
+    pub fn toast(&mut self, wid: &str, msg: &str, error: bool) {
+        if let Some(w) = self.win(wid) {
+            w.toast = Some((msg.to_string(), error, Instant::now()));
+            w.dirty = true;
+        }
+    }
+
+    /// `@music [sub…]`, `@play`, `@volume 40`, …: run off the main thread
+    /// (AppleScript and permission prompts can take a moment).
+    pub fn music(&mut self, wid: &str, name: &str, rest: &str) {
+        let line = match name {
+            "music" => rest.to_string(),
+            "music_focus" => "focus".to_string(),
+            other => format!("{other} {rest}"),
+        };
+        let tx = self.jobs_tx.clone();
+        let wid = wid.to_string();
+        std::thread::spawn(move || {
+            let r = crate::music::run(&line);
+            let _ = tx.send((wid, r));
+        });
     }
 
     pub fn set_rain_style(&mut self, style: crate::gutter::RainStyle) {
@@ -1487,6 +1529,7 @@ impl App {
             }
             "reset_font" => self.set_font_size(13.0),
             "info" | "version" | "zenteru" => self.show_splash(wid),
+            "music" | "music_focus" | "play" | "pause" | "mute" | "unmute" | "volume" => self.music(wid, name, ""),
             n if n.starts_with("rain_") => {
                 if let Some(style) = crate::gutter::RainStyle::parse(&n[5..]) {
                     self.set_rain_style(style);
@@ -2489,6 +2532,7 @@ impl App {
                 let pal = w.and_then(|w| w.palette.as_ref());
                 let panel = w.and_then(|w| w.panel.clone()).and_then(|id| self.panels.get(&id));
                 ok(Json::obj()
+                    .with("toast", w.and_then(|w| w.toast.as_ref()).map(|t| format!("{}{}", if t.1 { "ERROR " } else { "" }, t.0)))
                     .with("panel_input", panel.map(|p| p.input.clone()))
                     .with("panel_selection", panel.and_then(|p| p.selected_text()))
                     .with("magic_open", pal.is_some())
@@ -2612,6 +2656,13 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.info", "zenteru: info (ゼ splash)", "info"),
     ("zenteru.version", "zenteru: version", "version"),
     ("zenteru.zenteru", "zenteru", "zenteru"),
+    ("zenteru.music", "Music: focus what's playing (play, pause, mute, unmute, volume, next, prev)", "music"),
+    ("zenteru.music_focus", "Music: focus the window that's playing audio", "music-focus"),
+    ("zenteru.play", "Music: play", "play"),
+    ("zenteru.pause", "Music: pause", "pause"),
+    ("zenteru.mute", "Music: mute", "mute"),
+    ("zenteru.unmute", "Music: unmute", "unmute"),
+    ("zenteru.volume", "Music: volume up | down | min | max | 0–100 | 0.00–1.00", "volume"),
     ("zenteru.rain_drops", "Gutter rain: drops (default)", "rain-drops"),
     ("zenteru.rain_blocks", "Gutter rain: blocks (fixed matrix)", "rain-blocks"),
     ("zenteru.rain_custom", "Gutter rain: custom (plugin driver)", "rain-custom"),

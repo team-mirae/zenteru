@@ -18,7 +18,7 @@ use crate::app::{App, Palette};
 
 /// Command names a plugin may only claim if it says hello as the owner
 /// ("" = zenteru's own built-ins: no plugin may claim them).
-const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("version", ""), ("zenteru", "")];
+const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
 
 pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
 pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
@@ -178,7 +178,12 @@ impl App {
         if let Some(c) = cmd {
             if c.builtin {
                 let b = c.handler.trim_start_matches("zenteru.").to_string();
-                self.builtin(wid, &b);
+                if matches!(b.as_str(), "music" | "music_focus" | "play" | "pause" | "mute" | "unmute" | "volume") {
+                    // These take arguments: `@volume 40`, `@music pause`.
+                    self.music(wid, &b, rest);
+                } else {
+                    self.builtin(wid, &b);
+                }
             } else {
                 self.invoke_command_with(wid, &c.handler, Some(rest));
             }

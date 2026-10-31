@@ -127,6 +127,11 @@ pub fn support_dir() -> PathBuf {
     PathBuf::from(home).join("Library/Application Support/zenteru")
 }
 
+pub fn cache_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join("Library/Caches/zenteru")
+}
+
 pub fn log_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home).join("Library/Logs/zenteru")

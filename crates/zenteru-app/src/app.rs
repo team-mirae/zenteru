@@ -1705,6 +1705,8 @@ impl App {
                 .env("ZENTERU_TRANSIENT_DIR", &self.transient_dir)
                 .env("PYTHONPATH", &pythonpath)
                 .env("PYTHONUNBUFFERED", "1")
+                // Never write bytecode into the (signed) app bundle.
+                .env("PYTHONPYCACHEPREFIX", platform::cache_dir().join("pycache"))
                 .stdin(std::process::Stdio::null());
             if let Ok(l) = log {
                 if let Ok(l2) = l.try_clone() {

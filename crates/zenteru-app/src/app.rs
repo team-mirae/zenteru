@@ -2397,7 +2397,7 @@ impl App {
                 ok(result)
             }
             // Test hooks: drive zenteru's own keyboard path. Only with ZENTERU_DEBUG.
-            "debug.type" | "debug.key" | "debug.state" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
+            "debug.type" | "debug.key" | "debug.state" | "debug.zoom" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
                 let wid = p.get("window_id").as_str().map(String::from).or_else(|| self.windows.first().map(|w| w.id.clone()));
                 let Some(wid) = wid else { return Some(Err(("not_found", "no window".into()))) };
                 match method {
@@ -2405,6 +2405,13 @@ impl App {
                         let t = p.get("text").as_str().unwrap_or("").to_string();
                         for g in zenteru_text::seg::graphemes(&t) {
                             self.insert_text(&wid, g);
+                        }
+                    }
+                    "debug.zoom" => {
+                        // Exactly what a title-bar double-click does: zoom
+                        // while the app state is borrowed.
+                        if let Some(w) = self.windows.iter().find(|w| w.id == wid) {
+                            w.handle.window.zoom(None);
                         }
                     }
                     "debug.key" => {

@@ -17,7 +17,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSPoint, NSRange, NSRect, NSSize, NSString,
-    NSTimer, NSRunLoop, NSRunLoopCommonModes, NSUInteger, NSNotFound,
+    NSTimer, NSRunLoop, NSRunLoopCommonModes, NSUInteger, NSNotFound, NSUserDefaults,
 };
 use objc2_quartz_core::CAMetalLayer;
 
@@ -40,6 +40,31 @@ pub fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
         let mut b = a.try_borrow_mut().ok()?;
         b.as_mut().map(f)
     })
+}
+
+thread_local! {
+    static DEFERRED: RefCell<Vec<Box<dyn FnOnce(&mut App)>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Like `with_app`, but if the app is busy (an AppKit callback re-entered
+/// while we were handling an event, e.g. a zoom resizing the window from
+/// inside a mouse handler) the work runs on the next tick instead of being
+/// dropped.
+pub fn with_app_or_later(f: impl FnOnce(&mut App) + 'static) {
+    let mut f = Some(f);
+    let ran = with_app(|a| (f.take().unwrap())(a)).is_some();
+    if !ran {
+        if let Some(f) = f.take() {
+            DEFERRED.with(|d| d.borrow_mut().push(Box::new(f)));
+        }
+    }
+}
+
+fn run_deferred(a: &mut App) {
+    let jobs: Vec<Box<dyn FnOnce(&mut App)>> = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    for job in jobs {
+        job(a);
+    }
 }
 
 fn mtm() -> MainThreadMarker {
@@ -172,6 +197,9 @@ pub fn create_window(id: &str, origin: Option<(f64, f64)>, device: &ProtocolObje
     layer.setPixelFormat(objc2_metal::MTLPixelFormat::BGRA8Unorm);
     layer.setFramebufferOnly(true);
     layer.setPresentsWithTransaction(false);
+    // Never stretch an old frame to a new size; keep it pinned until redrawn.
+    layer.setContentsGravity(unsafe { objc2_quartz_core::kCAGravityTopLeft });
+    layer.setNeedsDisplayOnBoundsChange(false);
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
     container.addSubview(&view);
@@ -340,7 +368,7 @@ define_class!(
         #[unsafe(method(viewDidChangeBackingProperties))]
         fn backing_changed(&self) {
             let wid = self.wid();
-            with_app(|a| a.relayout(&wid));
+            with_app_or_later(move |a| a.relayout(&wid));
         }
     }
 
@@ -641,7 +669,13 @@ fn mouse(a: &mut App, wid: &str, x: f32, y: f32, btn: MouseButton, action: Mouse
         }
         // Empty bar: move the window; double click zooms.
         if clicks == 2 {
-            a.windows[wi].handle.window.zoom(None);
+            // System Settings → Desktop & Dock → "Double-click a window's title bar to".
+            let pref = NSUserDefaults::standardUserDefaults().stringForKey(&NSString::from_str("AppleActionOnDoubleClick")).map(|s| s.to_string());
+            match pref.as_deref() {
+                Some("Minimize") => a.windows[wi].handle.window.miniaturize(None),
+                Some("None") => {}
+                _ => a.windows[wi].handle.window.zoom(None),
+            }
         } else {
             a.windows[wi].handle.window.performWindowDragWithEvent(event);
         }
@@ -776,7 +810,7 @@ define_class!(
         #[unsafe(method(windowDidResize:))]
         fn did_resize(&self, _n: &NSNotification) {
             let id = self.ivars().window_id.clone();
-            with_app(|a| {
+            with_app_or_later(move |a| {
                 a.relayout(&id);
                 crate::ui::draw(a, &id);
             });
@@ -785,7 +819,7 @@ define_class!(
         #[unsafe(method(windowDidBecomeKey:))]
         fn did_become_key(&self, _n: &NSNotification) {
             let id = self.ivars().window_id.clone();
-            with_app(|a| {
+            with_app_or_later(move |a| {
                 a.key_window = Some(id.clone());
                 if let Some(w) = a.win(&id) {
                     w.dirty = true;
@@ -797,7 +831,7 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn did_resign_key(&self, _n: &NSNotification) {
             let id = self.ivars().window_id.clone();
-            with_app(|a| {
+            with_app_or_later(move |a| {
                 if let Some(w) = a.win(&id) {
                     w.dirty = true;
                 }
@@ -808,7 +842,7 @@ define_class!(
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn did_change_backing(&self, _n: &NSNotification) {
             let id = self.ivars().window_id.clone();
-            with_app(|a| a.relayout(&id));
+            with_app_or_later(move |a| a.relayout(&id));
         }
 
         #[unsafe(method(windowShouldClose:))]
@@ -881,6 +915,7 @@ define_class!(
         #[unsafe(method(tick:))]
         fn tick(&self, _t: &NSTimer) {
             with_app(|a| {
+                run_deferred(a);
                 a.tick();
                 if a.windows.is_empty() && a.quit_when_empty() {
                     NSApplication::sharedApplication(mtm()).terminate(None);

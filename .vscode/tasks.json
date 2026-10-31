@@ -1,0 +1,9 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "run zenteru", "type": "shell", "command": "cargo run -p zenteru-app", "group": "build", "problemMatcher": ["$rustc"] },
+    { "label": "test (rust)", "type": "shell", "command": "cargo test --workspace", "group": "test", "problemMatcher": ["$rustc"] },
+    { "label": "test (python)", "type": "shell", "command": "python3 -m unittest discover -s python/tests && python3 -m unittest discover -s plugins/hmxv/tests && python3 -m unittest discover -s plugins/complete/tests", "group": "test" },
+    { "label": "bundle + sign zenteru.app", "type": "shell", "command": "scripts/bundle.sh", "group": "build" }
+  ]
+}

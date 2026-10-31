@@ -1,0 +1,5 @@
+{
+  "rust-analyzer.cargo.features": "all",
+  "python.analysis.extraPaths": ["python"],
+  "files.exclude": { "**/__pycache__": true, "target": true, "dist": true }
+}

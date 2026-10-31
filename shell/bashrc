@@ -1,0 +1,8 @@
+# zenteru shell integration bootstrap (bash). zenteru starts bash with
+# --rcfile pointing here; load the usual login files, then integration.
+[ -r /etc/profile ] && . /etc/profile
+if [ -r "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile"
+elif [ -r "$HOME/.bash_login" ]; then . "$HOME/.bash_login"
+elif [ -r "$HOME/.profile" ]; then . "$HOME/.profile"
+fi
+[ -r "${ZENTERU_SHELL_DIR-}/zenteru.bash" ] && . "$ZENTERU_SHELL_DIR/zenteru.bash"

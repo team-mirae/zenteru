@@ -1,0 +1,10 @@
+[package]
+name = "zenteru-term"
+description = "Terminal core for zenteru: VT parser, zenkaku-aware grid, pty, plugin API server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zenteru-text = { path = "../zenteru-text" }

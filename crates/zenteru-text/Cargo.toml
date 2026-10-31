@@ -1,0 +1,11 @@
+[package]
+name = "zenteru-text"
+description = "Zenkaku-aware text logic (widths, letterblocks, Sino display) shared with zencode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.3"

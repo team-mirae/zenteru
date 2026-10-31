@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="tests (workspace)" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="test --workspace" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="emulateTerminal" value="false" />
+    <option name="channel" value="DEFAULT" />
+    <option name="backtrace" value="SHORT" />
+    <method v="2">
+      <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>

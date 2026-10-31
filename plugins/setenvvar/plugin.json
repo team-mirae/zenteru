@@ -1,0 +1,6 @@
+{
+  "name": "setenvvar",
+  "title": "Session env vars",
+  "entry": "main.py",
+  "autostart": true
+}

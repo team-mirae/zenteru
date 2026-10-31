@@ -1,0 +1,24 @@
+[package]
+name = "zenteru-app"
+description = "zenteru 젠테루 ゼンテール — a Metal terminal for macOS with first-class 全角 support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zenteru"
+path = "src/main.rs"
+
+[dependencies]
+zenteru-text = { path = "../zenteru-text" }
+zenteru-term = { path = "../zenteru-term" }
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-metal = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-text = "0.3.2"

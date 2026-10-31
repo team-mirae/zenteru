@@ -1,0 +1,29 @@
+{
+  // Needs the CodeLLDB extension (vadimcn.vscode-lldb).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "zenteru (debug)",
+      "cargo": { "args": ["build", "-p", "zenteru-app", "--bin", "zenteru"] },
+      "env": { "ZENTERU_DEBUG": "1" },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "zenteru (SINO_DISPLAY=KO)",
+      "cargo": { "args": ["build", "-p", "zenteru-app", "--bin", "zenteru"] },
+      "env": { "SINO_DISPLAY": "KO" },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "core tests",
+      "cargo": { "args": ["test", "--no-run", "-p", "zenteru-term", "--lib"] },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

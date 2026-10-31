@@ -1,0 +1,6 @@
+{
+  "name": "fileholder",
+  "title": "File holder",
+  "entry": "main.py",
+  "autostart": true
+}

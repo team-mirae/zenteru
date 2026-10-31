@@ -187,7 +187,8 @@ pub struct Sess {
     pub scroll_accum: f64,
     pub bell: Option<Instant>,
     pub last_phase: PromptPhase,
-    pub mouse_down_cell: Option<(usize, usize)>,
+    /// The unit pressed on (start, end, unit) while a selection drag is live.
+    pub sel_origin: Option<(Pos, Pos, u8)>,
 }
 
 #[derive(Clone, Debug)]
@@ -410,7 +411,7 @@ impl App {
                 scroll_accum: 0.0,
                 bell: None,
                 last_phase: PromptPhase::Unknown,
-                mouse_down_cell: None,
+                sel_origin: None,
             },
         );
         let w = &mut self.windows[wi];
@@ -1472,60 +1473,31 @@ impl App {
         }
         let t = s.s.term.lock().unwrap();
         let abs = t.view_abs(row);
-        let snap_col = |c: usize| -> usize {
-            // Never start inside the right half of a zenkaku character.
-            if let Some(r) = t.line(abs) {
-                if c > 0 && r.cells.get(c).is_some_and(|x| x.is_spacer()) && r.cells[c - 1].is_wide() {
-                    return c - 1;
-                }
-            }
-            c
-        };
+        let range_at = |unit: u8, line: u64, col: usize| unit_range(&t, unit, line, col);
         match action {
             MouseAction::Press => {
                 s.menu = None;
-                let col = snap_col(col);
-                match clicks {
-                    2 => {
-                        // Letterblock under the cursor (zencode rules).
-                        let (start, end) = match t.line(abs) {
-                            Some(r) => block_cols(r, col),
-                            None => (col, col + 1),
-                        };
-                        drop(t);
-                        s.selection = Some(Selection { anchor: Pos { line: abs, col: start }, head: Pos { line: abs, col: end }, unit: 1 });
-                    }
-                    3 => {
-                        let cols = t.cols;
-                        drop(t);
-                        s.selection = Some(Selection { anchor: Pos { line: abs, col: 0 }, head: Pos { line: abs, col: cols }, unit: 2 });
-                    }
-                    _ => {
-                        drop(t);
-                        s.selection = None;
-                        s.mouse_down_cell = Some((col, row));
-                        let _ = abs;
-                    }
-                }
+                let unit = match clicks {
+                    2 => 1,
+                    3 => 2,
+                    _ => 0,
+                };
+                let origin = range_at(unit, abs, col);
+                drop(t);
+                s.sel_origin = Some((origin.0, origin.1, unit));
+                // Double / triple click select right away; a single click
+                // only selects once the pointer moves.
+                s.selection = (unit > 0).then(|| Selection { anchor: origin.0, head: origin.1, unit });
             }
             MouseAction::Motion => {
-                let col_end = col + 1;
-                let cols = t.cols;
+                let Some((o0, o1, unit)) = s.sel_origin else { return };
+                let cur = range_at(unit, abs, col);
                 drop(t);
-                if let Some(sel) = &mut s.selection {
-                    sel.head = Pos { line: abs, col: if sel.unit == 2 { cols } else { col_end } };
-                } else if let Some((c0, r0)) = s.mouse_down_cell {
-                    if (c0, r0) != (col, row) {
-                        let t = s.s.term.lock().unwrap();
-                        let a0 = t.view_abs(r0);
-                        drop(t);
-                        s.selection = Some(Selection { anchor: Pos { line: a0, col: c0 }, head: Pos { line: abs, col: col_end }, unit: 0 });
-                    }
-                }
+                s.selection = extend_selection((o0, o1), cur, unit).map(|(a, h)| Selection { anchor: a, head: h, unit });
             }
             MouseAction::Release => {
                 drop(t);
-                s.mouse_down_cell = None;
+                s.sel_origin = None;
             }
         }
         s.s.dirty.store(true, Ordering::Release);
@@ -2373,5 +2345,90 @@ fn clean_stale_runs(rt: &std::path::Path) {
         if pid != std::process::id() as i32 && unsafe { kill(pid, 0) } != 0 {
             let _ = std::fs::remove_dir_all(e.path());
         }
+    }
+}
+
+/// The selection unit at (line, col) as a [start, end) range: a cell (both
+/// halves of a zenkaku character), a letterblock (unit 1) or a line (2).
+pub fn unit_range(t: &zenteru_term::term::Terminal, unit: u8, line: u64, col: usize) -> (Pos, Pos) {
+    let r = t.line(line);
+    match unit {
+        1 => {
+            let (a, b) = r.map(|r| block_cols(r, col)).unwrap_or((col, col + 1));
+            (Pos { line, col: a }, Pos { line, col: b })
+        }
+        2 => (Pos { line, col: 0 }, Pos { line, col: t.cols }),
+        _ => {
+            let mut c = col;
+            if let Some(r) = r {
+                if c > 0 && r.cells.get(c).is_some_and(|x| x.is_spacer()) && r.cells[c - 1].is_wide() {
+                    c -= 1;
+                }
+            }
+            let w = if r.and_then(|r| r.cells.get(c)).is_some_and(|x| x.is_wide()) { 2 } else { 1 };
+            (Pos { line, col: c }, Pos { line, col: c + w })
+        }
+    }
+}
+
+/// Selection from the unit pressed on (`origin`) to the unit under the
+/// pointer (`cur`), in either direction, including both. A plain click
+/// that hasn't left its cell selects nothing.
+pub fn extend_selection(origin: (Pos, Pos), cur: (Pos, Pos), unit: u8) -> Option<(Pos, Pos)> {
+    let key = |p: Pos| (p.line, p.col);
+    if unit == 0 && key(cur.0) == key(origin.0) {
+        return None;
+    }
+    let start = if key(cur.0) < key(origin.0) { cur.0 } else { origin.0 };
+    let end = if key(cur.1) > key(origin.1) { cur.1 } else { origin.1 };
+    Some((start, end))
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use zenteru_term::term::Terminal;
+
+    fn select(t: &Terminal, unit: u8, from: usize, to: usize) -> String {
+        let o = unit_range(t, unit, 0, from);
+        let c = unit_range(t, unit, 0, to);
+        let (a, b) = extend_selection(o, c, unit).expect("selection");
+        t.text_range((a.line, a.col), (b.line, b.col))
+    }
+
+    #[test]
+    fn drag_includes_both_ends_in_either_direction() {
+        let mut t = Terminal::new(20, 2);
+        t.feed(b"hello world");
+        assert_eq!(select(&t, 0, 0, 10), "hello world");
+        assert_eq!(select(&t, 0, 10, 0), "hello world");
+        assert_eq!(select(&t, 0, 6, 0), "hello w");
+        // Past the end of the text, to the right margin.
+        assert_eq!(select(&t, 0, 19, 0).trim_end(), "hello world");
+    }
+
+    #[test]
+    fn zenkaku_cells_select_whole() {
+        let mut t = Terminal::new(20, 2);
+        t.feed("한국어를 배웁니다".as_bytes());
+        // Pointer on the right half of 한 (col 1) still takes 한.
+        assert_eq!(select(&t, 0, 7, 1), "한국어를");
+        assert_eq!(select(&t, 0, 1, 7), "한국어를");
+    }
+
+    #[test]
+    fn letterblock_drag_backwards() {
+        let mut t = Terminal::new(30, 2);
+        t.feed("echo 한국어를 배웁니다".as_bytes());
+        // Double-click on 배 then drag back onto 한국어: whole blocks.
+        assert_eq!(select(&t, 1, 14, 6), "한국어를 배웁니다");
+    }
+
+    #[test]
+    fn click_without_moving_selects_nothing() {
+        let mut t = Terminal::new(10, 1);
+        t.feed(b"abc");
+        let o = unit_range(&t, 0, 0, 1);
+        assert!(extend_selection(o, o, 0).is_none());
     }
 }

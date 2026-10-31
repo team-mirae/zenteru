@@ -3,6 +3,7 @@
 
 mod app;
 mod font;
+mod magic;
 mod platform;
 mod render;
 mod sudo_auth;

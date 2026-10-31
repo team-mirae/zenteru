@@ -151,9 +151,9 @@ class Connection:
 
     # ------------------------------------------------------- registrations
     async def register(self, handler: str, kind: str, func: HandlerFunc, *, title: str | None = None,
-                       keybinding: str | None = None, timeout_ms: int | None = None) -> None:
+                       keybinding: str | None = None, timeout_ms: int | None = None, **extra) -> None:
         self._handlers[handler] = func
-        params: dict = {"handler": handler, "kind": kind}
+        params: dict = {"handler": handler, "kind": kind, **extra}
         if title is not None:
             params["title"] = title
         if keybinding is not None:

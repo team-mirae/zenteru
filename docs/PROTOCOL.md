@@ -152,9 +152,17 @@ zenteru touches `$ZENTERU_SESSION_DIR/skip-env-once`; the hook consumes it.
 | `rpc.unregister` | `{handler}` | `{}` |
 
 Kinds:
-* `command` — appears in the command palette (⌘⇧P) as `title`;
-  `keybinding` like `"cmd+shift+e"` optionally binds it. Invoked with
-  `args: {session_id, window_id, tab_id}`; return value ignored.
+* `command` — appears in Black Magic (⌘⇧P or `@`) as `title`, typed as
+  `@<name>` (`name` param; default: the handler). `keybinding` like
+  `"cmd+shift+e"` optionally binds it. Invoked with
+  `args: {session_id, window_id, tab_id}` plus, from Black Magic,
+  `{line, argv, source: "black_magic"}` (the text after the name). Return
+  value ignored. The names `help` and `hmxv` are reserved for the plugin that
+  says hello as `hmxv`.
+* `agent` — an **agentic helper** (Consumer<String>): Black Magic lines that
+  match no command go to the registered helper with the highest `priority`,
+  as `args: {text, session_id, window_id, tab_id, source: "black_magic"}`.
+  Answer at once and work in the background.
 * `drop_handler` — called when files or image data are dropped onto a
   session, or pasted when the clipboard holds an image or files but no
   text. `args: {session_id, source: "drop"|"paste", items: [Item]}`.
@@ -192,6 +200,21 @@ Panel events arrive on subscription kind `panel` (`notify.subscribe {kind:"panel
 (user closed the column; the panel still exists) · `{panel_id, type: "closed"}`
 (destroyed). The core never echoes input into the transcript — the plugin
 decides what to show. `panel.update` with `actions: []` removes buttons.
+
+### Black Magic (core behaviour)
+Typing `@` opens **Black Magic** (the label is never translated) when no
+program is reading keys itself: an empty shell prompt (exact with shell
+integration; over ssh/mosh or without integration, nothing typed since
+Enter and the cursor right after a `$ % # ❯ » ➜`-style prompt that isn't a
+box-drawn input field), or vim/nvim outside insert/replace/command-line
+mode. ⌘⇧P opens the same bar. `@@` types a literal `@`. Enter runs a
+built-in command, else a plugin `command` (by name, handler or title), else
+hands the whole line to the `agent`; with no agent it says
+`unknown command` and stays open. ↑/↓ pick a suggestion, ⇥ completes it,
+Esc or ⌫ on an empty line closes.
+
+With `ZENTERU_DEBUG` set, `debug.type {text}` and `debug.key {key}` drive
+zenteru's own keyboard path (for tests); they don't exist otherwise.
 
 ### Password safety (core behaviour)
 * **Password fields** (tty echo off + canonical mode: sudo, ssh, `read -s`,

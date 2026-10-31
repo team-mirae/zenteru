@@ -31,6 +31,15 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   - Dragging the only tab moves the window.
   - The whole top bar uses the zencode gradient, and the window corners are
     square.
+- **Black Magic.** Type `@` at an empty prompt (local or over ssh), or in
+  vim's normal mode, or press ⌘⇧P. Known commands run (`@new-tab`,
+  `@line-numbers`, plugin commands), and anything else goes to the agentic
+  helper (hmxv): `@why did -3 fail?`. `@help` and `@hmxv` belong to hmxv,
+  and `@@` types a literal `@`.
+- **Line references.** In shell mode a gutter shows ゼロ, -1, -2 … counting
+  up from the cursor's line, plus a 3-character code per line taken from a
+  UUIDv7 stamped when the line arrived. You can cite either one to hmxv or
+  to plugins.
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.

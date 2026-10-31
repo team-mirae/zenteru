@@ -15,6 +15,9 @@ from .ui import PanelUI
 PANEL_TITLE = "hmxv"
 TOGGLE_HANDLER = "hmxv.toggle_panel"
 EXIT_HANDLER = "hmxv.help_me_exit"
+AGENT_HANDLER = "hmxv.agent"
+HELP_HANDLER = "hmxv.help"
+ASK_HANDLER = "hmxv.ask"
 
 
 class HmxvApp:
@@ -39,7 +42,12 @@ class HmxvApp:
         await self.conn.register(TOGGLE_HANDLER, "command", self._cmd_toggle,
                                  title="hmxv: Toggle panel", keybinding="cmd+shift+h")
         await self.conn.register(EXIT_HANDLER, "command", self._cmd_help_exit,
-                                 title="hmxv: Help me exit")
+                                 title="hmxv: Help me exit", name="exit-vim")
+        # Black Magic: `@help` and `@hmxv` are reserved for hmxv, and any line
+        # that isn't a known command comes here (we are the agentic helper).
+        await self.conn.register(HELP_HANDLER, "command", self._cmd_help, title="hmxv: Help", name="help")
+        await self.conn.register(ASK_HANDLER, "command", self._cmd_ask, title="hmxv: Ask", name="hmxv")
+        await self.conn.register(AGENT_HANDLER, "agent", self._agent_line, title="hmxv", priority=10)
 
     def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.create_task(self._guard(coro))
@@ -115,6 +123,36 @@ class HmxvApp:
     async def _cmd_help_exit(self, args: dict):
         self._spawn(self.help_me_exit(args.get("window_id"), args.get("session_id")))
         return None
+
+    async def _cmd_help(self, args: dict):
+        self._spawn(self.ask(args.get("window_id"), "/help", args.get("session_id")))
+        return None
+
+    async def _cmd_ask(self, args: dict):
+        line = str(args.get("line") or "").strip()
+        if line:
+            self._spawn(self.ask(args.get("window_id"), line, args.get("session_id")))
+        else:
+            self._spawn(self.show_panel(args.get("window_id")))
+        return None
+
+    async def _agent_line(self, args: dict):
+        text = str(args.get("text") or "").strip()
+        if text:
+            self._spawn(self.ask(args.get("window_id"), text, args.get("session_id")))
+        return None
+
+    async def show_panel(self, window_id: str | None) -> str:
+        pid, _agent, _ = await self.ensure_panel(window_id)
+        await self.conn.call("panel.show", {"panel_id": pid})
+        return pid
+
+    async def ask(self, window_id: str | None, text: str, session_id: str | None = None) -> None:
+        """A line from Black Magic: show the panel and treat it like typed input."""
+        pid = await self.show_panel(window_id)
+        agent = self.panels[pid]
+        sid = session_id or await self.session_for_window(self.panel_window.get(pid))
+        await agent.handle_input(text, sid)
 
     async def toggle_panel(self, window_id: str | None) -> None:
         pid, _agent, created = await self.ensure_panel(window_id)

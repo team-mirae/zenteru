@@ -84,9 +84,15 @@ pub struct Hits {
     pub ime: [f32; 4],
 }
 
+/// The Black Magic bar (see magic.rs); ⌘⇧P opens the same thing.
+#[derive(Default)]
 pub struct Palette {
-    pub filter: String,
+    pub text: String,
     pub selected: usize,
+    /// The user picked a suggestion with ↑/↓ (Enter runs that one).
+    pub moved: bool,
+    pub message: Option<String>,
+    pub preedit: String,
 }
 
 pub struct Win {
@@ -189,6 +195,8 @@ pub struct Sess {
     pub menu: Option<CompletionMenu>,
     pub comp_pending: Option<(String, Instant)>,
     pub queued: Vec<Vec<u8>>,
+    /// Something was typed on the current line (since Enter / ⌃C / ⌃U).
+    pub line_typed: bool,
     pub vars: HashMap<String, String>,
     pub scroll_accum: f64,
     pub bell: Option<Instant>,
@@ -416,6 +424,7 @@ impl App {
                 menu: None,
                 comp_pending: None,
                 queued: Vec::new(),
+                line_typed: false,
                 vars: HashMap::new(),
                 scroll_accum: 0.0,
                 bell: None,
@@ -799,7 +808,11 @@ impl App {
         self.windows[wi].dirty = true;
 
         if self.windows[wi].palette.is_some() {
-            return crate::ui::palette_key(self, wid, &key, mods);
+            if has_marked {
+                // Composing (한글 / かな) inside the bar: the IME owns the keys.
+                return false;
+            }
+            return self.magic_key(wid, &key, mods);
         }
         if let Some(handler) = self.keybinding_handler(&key, mods) {
             self.invoke_command(wid, &handler);
@@ -966,11 +979,13 @@ impl App {
         let Some(wi) = self.win_index(wid) else { return };
         self.windows[wi].dirty = true;
         if self.windows[wi].palette.is_some() {
-            if let Some(p) = &mut self.windows[wi].palette {
-                p.filter.push_str(text);
-                p.selected = 0;
-            }
+            self.magic_text(wid, text);
             return;
+        }
+        if let Some(sid) = self.windows[wi].active_session().map(String::from) {
+            if self.windows[wi].focus == Focus::Terminal && self.magic_at(wid, &sid, text) {
+                return;
+            }
         }
         if self.windows[wi].focus == Focus::Panel {
             if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
@@ -996,6 +1011,10 @@ impl App {
     pub fn set_preedit(&mut self, wid: &str, text: &str) {
         let Some(wi) = self.win_index(wid) else { return };
         self.windows[wi].dirty = true;
+        if let Some(p) = &mut self.windows[wi].palette {
+            p.preedit = text.to_string();
+            return;
+        }
         if self.windows[wi].focus == Focus::Panel {
             if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
                 p.preedit = text.to_string();
@@ -1018,6 +1037,11 @@ impl App {
             return;
         }
         s.selection = None;
+        if bytes.iter().any(|&b| matches!(b, b'\r' | b'\n' | 0x03 | 0x15)) {
+            s.line_typed = false;
+        } else if bytes.iter().any(|&b| b >= 0x20 && b != 0x7f) {
+            s.line_typed = true;
+        }
         s.s.term.lock().unwrap().scroll_to_bottom();
         if let Some(api) = &self.api {
             if !s.pwd.active && api.has_subscribers("keystroke") {
@@ -1236,18 +1260,20 @@ impl App {
         })
     }
 
-    pub fn commands(&self) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = BUILTIN_COMMANDS.iter().map(|(h, t)| (h.to_string(), t.to_string())).collect();
-        if let Some(api) = &self.api {
-            for r in api.registrations("command") {
-                let title = r.params.get("title").as_str().unwrap_or(&r.handler).to_string();
-                out.push((r.handler.clone(), title));
-            }
-        }
-        out
+    pub fn invoke_command(&mut self, wid: &str, handler: &str) {
+        self.invoke_command_with(wid, handler, None);
     }
 
-    pub fn invoke_command(&mut self, wid: &str, handler: &str) {
+    /// Call a registered handler (fire and forget).
+    pub fn call_handler(&mut self, reg: &zenteru_term::api::Registration, args: Json) {
+        let Some(api) = &self.api else { return };
+        let id = api.call(reg.conn, &reg.handler, args);
+        self.calls.insert(id, CallWait { kind: PendingCall::Command, deadline: Instant::now() + Duration::from_secs(5) });
+    }
+
+    /// Run a palette command; `line` is the text after the command name
+    /// when it came from Black Magic (`@name args…`).
+    pub fn invoke_command_with(&mut self, wid: &str, handler: &str, line: Option<&str>) {
         if let Some(b) = handler.strip_prefix("zenteru.") {
             self.builtin(wid, b);
             return;
@@ -1257,7 +1283,13 @@ impl App {
         let w = self.windows.iter().find(|w| w.id == wid);
         let tid = w.and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
         let sid = w.and_then(|w| w.active_session()).map(String::from);
-        let args = Json::obj().with("window_id", wid).with("tab_id", tid).with("session_id", sid);
+        let mut args = Json::obj().with("window_id", wid).with("tab_id", tid).with("session_id", sid);
+        if let Some(line) = line {
+            let argv: Vec<Json> = line.split_whitespace().map(Json::from).collect();
+            args.set("line", line);
+            args.set("argv", Json::Arr(argv));
+            args.set("source", "black_magic");
+        }
         let id = api.call(reg.conn, handler, args);
         self.calls.insert(id, CallWait { kind: PendingCall::Command, deadline: Instant::now() + Duration::from_secs(5) });
     }
@@ -1325,7 +1357,7 @@ impl App {
             }
             "palette" => {
                 if let Some(w) = self.win(wid) {
-                    w.palette = Some(Palette { filter: String::new(), selected: 0 });
+                    w.palette = Some(Palette::default());
                     w.dirty = true;
                 }
             }
@@ -2233,6 +2265,42 @@ impl App {
                 }
                 ok(result)
             }
+            // Test hooks: drive zenteru's own keyboard path. Only with ZENTERU_DEBUG.
+            "debug.type" | "debug.key" | "debug.state" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
+                let wid = p.get("window_id").as_str().map(String::from).or_else(|| self.windows.first().map(|w| w.id.clone()));
+                let Some(wid) = wid else { return Some(Err(("not_found", "no window".into()))) };
+                match method {
+                    "debug.type" => {
+                        let t = p.get("text").as_str().unwrap_or("").to_string();
+                        for g in zenteru_text::seg::graphemes(&t) {
+                            self.insert_text(&wid, g);
+                        }
+                    }
+                    "debug.key" => {
+                        let key = match p.get("key").as_str().unwrap_or("") {
+                            "Enter" => Key::Enter,
+                            "Escape" => Key::Escape,
+                            "Backspace" => Key::Backspace,
+                            "Tab" => Key::Tab,
+                            "Up" => Key::Up,
+                            "Down" => Key::Down,
+                            other => Key::Text(other.to_string()),
+                        };
+                        if !self.key_down(&wid, key.clone(), Mods::default(), false) {
+                            if let Key::Text(t) = key {
+                                self.insert_text(&wid, &t);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                let w = self.windows.iter().find(|w| w.id == wid);
+                let pal = w.and_then(|w| w.palette.as_ref());
+                ok(Json::obj()
+                    .with("magic_open", pal.is_some())
+                    .with("magic_text", pal.map(|p| p.text.clone()))
+                    .with("magic_message", pal.and_then(|p| p.message.clone())))
+            }
             "ui.notify" => {
                 platform::notify(p.get("title").as_str().unwrap_or(""), p.get("body").as_str().unwrap_or(""));
                 empty()
@@ -2291,19 +2359,20 @@ impl App {
     }
 }
 
-const BUILTIN_COMMANDS: &[(&str, &str)] = &[
-    ("zenteru.new_tab", "New Tab"),
-    ("zenteru.new_window", "New Window"),
-    ("zenteru.close_tab", "Close Tab"),
-    ("zenteru.next_tab", "Next Tab"),
-    ("zenteru.prev_tab", "Previous Tab"),
-    ("zenteru.clear", "Clear Scrollback"),
-    ("zenteru.bigger", "Bigger Text"),
-    ("zenteru.smaller", "Smaller Text"),
-    ("zenteru.reset_font", "Reset Text Size"),
-    ("zenteru.focus_panel", "Focus Side Panel"),
-    ("zenteru.toggle_gutter", "Toggle Line Numbers (ゼロ / codes)"),
-    ("zenteru.sudo_auth", "Set Up Touch ID / YubiKey for sudo…"),
+/// (handler, title, Black Magic name)
+pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
+    ("zenteru.new_tab", "New Tab", "new-tab"),
+    ("zenteru.new_window", "New Window", "new-window"),
+    ("zenteru.close_tab", "Close Tab", "close-tab"),
+    ("zenteru.next_tab", "Next Tab", "next-tab"),
+    ("zenteru.prev_tab", "Previous Tab", "prev-tab"),
+    ("zenteru.clear", "Clear Scrollback", "clear"),
+    ("zenteru.bigger", "Bigger Text", "bigger"),
+    ("zenteru.smaller", "Smaller Text", "smaller"),
+    ("zenteru.reset_font", "Reset Text Size", "reset-font"),
+    ("zenteru.focus_panel", "Focus Side Panel", "panel"),
+    ("zenteru.toggle_gutter", "Toggle Line Numbers (ゼロ / codes)", "line-numbers"),
+    ("zenteru.sudo_auth", "Set Up Touch ID / YubiKey for sudo…", "sudo-auth"),
 ];
 
 fn parse_actions(v: &Json) -> Vec<(String, String)> {

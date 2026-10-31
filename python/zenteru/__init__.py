@@ -50,7 +50,10 @@ from .panel import Panel, PanelEvent
 from .prompt import Prompt, PromptState, async_get_last_prompt
 from .registration import (
     RPC,
+    AgentHelper,
+    AgentRequest,
     Command,
+    async_register_agent,
     CommandInvocation,
     DropEvent,
     DropHandler,
@@ -72,7 +75,7 @@ __version__ = "0.1.0"
 __all__ = [
     "line_code",
     "rel_label",
-    "Alert", "App", "AuthenticationError", "Command", "CommandInvocation", "Connection",
+    "AgentHelper", "AgentRequest", "Alert", "App", "async_register_agent", "AuthenticationError", "Command", "CommandInvocation", "Connection",
     "ConnectionClosed", "DropEvent", "DropHandler", "DropItem", "EachSessionOnceMonitor",
     "FocusMonitor", "FocusUpdate", "Frame", "Keystroke", "KeystrokeMonitor",
     "LayoutChangeMonitor", "LineContents", "LineInfo", "Modifier", "NewSessionMonitor",

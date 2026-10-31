@@ -114,11 +114,16 @@ class _Registration:
         title: Optional[str] = None,
         keybinding: Optional[str] = None,
         timeout_ms: Optional[int] = None,
+        name: Optional[str] = None,
+        extra: Optional[dict] = None,
     ) -> None:
         self.identifier = identifier
         self.title = title
         self.keybinding = keybinding
         self.timeout_ms = timeout_ms
+        #: What users type after ``@`` in Black Magic, e.g. ``"deploy"``.
+        self.name = name
+        self.extra = dict(extra or {})
         self.connection: Optional["Connection"] = None
 
     async def _invoke(self, args: dict) -> Any:  # pragma: no cover - abstract
@@ -132,6 +137,9 @@ class _Registration:
             params["keybinding"] = self.keybinding
         if self.timeout_ms is not None:
             params["timeout_ms"] = int(self.timeout_ms)
+        if self.name is not None:
+            params["name"] = self.name
+        params.update(self.extra)
         self.connection = connection
         connection.register_handler(self.identifier, self._invoke)
         try:
@@ -208,6 +216,19 @@ class CommandInvocation:
     tab_id: Optional[str]
     args: dict = field(default_factory=dict)
 
+    @property
+    def line(self) -> str:
+        """Text after the command name when run from Black Magic (``@name …``)."""
+        return str(self.args.get("line") or "")
+
+    @property
+    def argv(self) -> list[str]:
+        return [str(a) for a in self.args.get("argv") or []]
+
+    @property
+    def from_black_magic(self) -> bool:
+        return self.args.get("source") == "black_magic"
+
     async def async_get_session(self) -> Optional["Session"]:
         """The session the command was invoked in (live App object)."""
         if not self.session_id:
@@ -247,8 +268,9 @@ class Command(_Registration):
         identifier: Optional[str] = None,
         keybinding: Optional[str] = None,
         timeout_ms: Optional[int] = None,
+        name: Optional[str] = None,
     ) -> None:
-        super().__init__(identifier or f"command.{_slug(title)}", title, keybinding, timeout_ms)
+        super().__init__(identifier or f"command.{_slug(title)}", title, keybinding, timeout_ms, name)
         self.handler = handler
 
     def __call__(self, handler: CommandHandler) -> "Command":
@@ -264,6 +286,62 @@ class Command(_Registration):
         )
         self.connection.spawn(self.handler(inv))
         return None
+
+
+# ----------------------------------------------------------------------
+# agentic helpers (Black Magic fallback)
+
+
+@dataclass
+class AgentRequest:
+    """Context for an agentic helper call: the line plus where it was typed."""
+
+    connection: "Connection"
+    text: str
+    session_id: Optional[str]
+    window_id: Optional[str]
+    tab_id: Optional[str]
+
+
+#: An agentic helper is a Consumer<String>: a coroutine taking the line.
+#: It may take a second argument to receive the :class:`AgentRequest`.
+AgentHandler = Callable[..., Awaitable[Any]]
+
+
+class AgentHelper(_Registration):
+    """Marks this plugin as an agentic helper (like hmxv).
+
+    A line typed in Black Magic (``@…``) that is not a known command is
+    handed to the helper with the highest ``priority``::
+
+        async def ask(line: str) -> None: ...
+        await zenteru.AgentHelper(ask).async_register(connection)
+
+    The call returns immediately; ``handler`` runs in the background.
+    """
+
+    kind = "agent"
+
+    def __init__(self, handler: AgentHandler, identifier: Optional[str] = None, title: Optional[str] = None, priority: int = 0) -> None:
+        super().__init__(identifier or "agent", title, extra={"priority": int(priority)})
+        self.handler = handler
+
+    async def _invoke(self, args: dict) -> None:
+        assert self.connection is not None
+        req = AgentRequest(self.connection, str(args.get("text") or ""), args.get("session_id"), args.get("window_id"), args.get("tab_id"))
+        try:
+            n = len(inspect.signature(self.handler).parameters)
+        except (TypeError, ValueError):
+            n = 1
+        self.connection.spawn(self.handler(req.text, req) if n >= 2 else self.handler(req.text))
+        return None
+
+
+async def async_register_agent(connection: "Connection", handler: AgentHandler, identifier: Optional[str] = None, priority: int = 0) -> AgentHelper:
+    """Register ``handler`` (a coroutine taking the line) as an agentic helper."""
+    helper = AgentHelper(handler, identifier, priority=priority)
+    await helper.async_register(connection)
+    return helper
 
 
 # ----------------------------------------------------------------------

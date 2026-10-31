@@ -7,11 +7,10 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use zenteru_term::cell::{Color, flags};
-use zenteru_term::input::{Key, Mods};
 use zenteru_text::palette::{self as pal, Rgb};
 use zenteru_text::text::{grapheme_width, str_width};
 
-use crate::app::{App, Focus, Hits, Layout, Palette, TRAFFIC_LIGHTS_PT};
+use crate::app::{App, Focus, Hits, Layout, TRAFFIC_LIGHTS_PT};
 use crate::font::Style;
 use crate::render::{Frame, Grad, Rgba, rgba};
 
@@ -105,7 +104,7 @@ fn elide(s: &str, max: usize) -> String {
 
 pub fn draw(app: &mut App, wid: &str) {
     let Some(wi) = app.win_index(wid) else { return };
-    let commands = if app.windows[wi].palette.is_some() { app.commands() } else { Vec::new() };
+    let magic_items = app.windows[wi].palette.as_ref().map(|p| app.magic_items(&p.text)).unwrap_or_default();
     let App { renderer, windows, sessions, panels, .. } = app;
     let win = &mut windows[wi];
     win.dirty = false;
@@ -644,35 +643,76 @@ pub fn draw(app: &mut App, wid: &str) {
         }
     }
 
-    // ---- command palette ----------------------------------------------
+    // ---- Black Magic (the @ command line, also ⌘⇧P) ---------------------
     if let Some(ps) = &win.palette {
-        let items = palette_items(commands, &ps.filter);
-        let pw = (l.w * 0.6).clamp(320.0 * s, 720.0 * s);
-        let px = (l.w - pw) / 2.0;
-        let py = l.tabbar_h + 24.0 * s;
-        let rows = items.len().min(12);
-        let ph = (rows as f32 + 1.0) * ch + 26.0 * s;
-        f.rect(0.0, l.tabbar_h, l.w, l.h - l.tabbar_h, rgba(Rgb(0, 0, 0), 0.35));
-        f.round_rect(px, py, pw, ph, 10.0 * s, c(Rgb(30, 26, 44)));
-        f.gradient_border(px, py, pw, ph, 10.0 * s, 2.0 * s, c(pal::GRADIENT_FROM), grad_to());
-        let cells = ((pw - 24.0 * s) / cw) as usize;
-        let fy = py + 10.0 * s;
-        if ps.filter.is_empty() {
-            renderer.text(&mut f, "Type a command…  コマンド · 명령", px + 12.0 * s, fy, rgba(pal::LABEL, 0.7), Style::Italic, cells, None, scale);
-        } else {
-            let w = renderer.text(&mut f, &ps.filter, px + 12.0 * s, fy, c(pal::FG), Style::Regular, cells, None, scale);
-            f.rect(px + 12.0 * s + w as f32 * cw, fy, 2.0 * s, ch, c(pal::CURSOR));
+        // Anchor: the cursor's row in the shell; the line above the bottom in
+        // full-screen programs (vim keeps its own last line).
+        let (row, col, alt) = win
+            .active_session()
+            .and_then(|sid| sessions.get(sid))
+            .map(|ss| {
+                let t = ss.s.term.lock().unwrap();
+                (t.cursor.y, t.cursor.x, t.alt_screen())
+            })
+            .unwrap_or((0, 0, false));
+        let row = if alt { l.rows.saturating_sub(2) } else { row.min(l.rows.saturating_sub(1)) };
+        let min_cells = 44usize.min(l.cols);
+        let col = if alt { 0 } else { col.min(l.cols.saturating_sub(min_cells)) };
+        let bx = l.term_x + col as f32 * cw - 4.0 * s;
+        let bw = l.term_x + l.cols as f32 * cw - bx + 4.0 * s;
+        let by = l.term_y + row as f32 * ch - 3.0 * s;
+        let bh = ch + 6.0 * s;
+        f.gradient_rect(bx, by, bw, bh, 7.0 * s, c(pal::GRADIENT_FROM), grad_to());
+        let ty = by + 3.0 * s;
+        let mut x = bx + 8.0 * s;
+        let chip = "Black Magic";
+        let chip_w = str_width(chip) as f32 * cw + 12.0 * s;
+        f.round_rect(x - 4.0 * s, by + 3.0 * s, chip_w, ch, 5.0 * s, rgba(pal::ON_GRADIENT, 0.88));
+        let g = Grad { x0: x, x1: x + chip_w, to: grad_to() };
+        renderer.text(&mut f, chip, x + 2.0 * s, ty, c(pal::GRADIENT_FROM), Style::Bold, str_width(chip), Some(g), scale);
+        x += chip_w + cw * 0.5;
+        x += renderer.text(&mut f, "@", x, ty, c(pal::ON_GRADIENT), Style::Bold, 1, None, scale) as f32 * cw;
+        let room = ((bx + bw - x) / cw).max(1.0) as usize;
+        let typed = format!("{}{}", ps.text, ps.preedit);
+        if typed.is_empty() {
+            renderer.text(&mut f, "command, or ask anything · @@ types @", x, ty, rgba(pal::ON_GRADIENT, 0.55), Style::Italic, room, None, scale);
         }
-        hits_ime(&mut hits, px + 12.0 * s, fy, cw, ch);
-        let sel = ps.selected.min(items.len().saturating_sub(1));
-        let first = sel.saturating_sub(rows.saturating_sub(1));
-        for (k, (_, title)) in items.iter().skip(first).take(rows).enumerate() {
-            let iy = fy + ch + 10.0 * s + k as f32 * ch;
-            let on = first + k == sel;
-            if on {
-                f.gradient_rect(px + 6.0 * s, iy, pw - 12.0 * s, ch, 6.0 * s, c(pal::GRADIENT_FROM), grad_to());
+        let tw = renderer.text(&mut f, &ps.text, x, ty, c(pal::ON_GRADIENT), Style::Bold, room, None, scale) as f32 * cw;
+        let pw_ = renderer.text(&mut f, &ps.preedit, x + tw, ty, c(pal::ON_GRADIENT), Style::Regular, room, None, scale) as f32 * cw;
+        if !ps.preedit.is_empty() {
+            f.rect(x + tw, ty + ch - 2.0 * s, pw_.max(cw), 2.0 * s, c(pal::ON_GRADIENT));
+        }
+        f.rect(x + tw + pw_, ty, 2.0 * s, ch, c(pal::ON_GRADIENT));
+        hits_ime(&mut hits, x + tw, ty, cw, ch);
+        if let Some(msg) = &ps.message {
+            let mw = str_width(msg) as f32 * cw + 12.0 * s;
+            let mx = bx + bw - mw - 6.0 * s;
+            f.round_rect(mx, by + 3.0 * s, mw, ch, 5.0 * s, c(pal::BG));
+            renderer.text(&mut f, msg, mx + 6.0 * s, ty, c(pal::ERROR), Style::Bold, str_width(msg), None, scale);
+        }
+        // Suggestions under the bar (above it near the bottom).
+        let shown = magic_items.len().min(8);
+        if shown > 0 {
+            let lh = shown as f32 * ch + 8.0 * s;
+            let ly = if by + bh + lh + 4.0 * s < l.h { by + bh + 4.0 * s } else { by - lh - 4.0 * s };
+            f.round_rect(bx, ly, bw, lh, 7.0 * s, c(Rgb(30, 26, 44)));
+            f.gradient_border(bx, ly, bw, lh, 7.0 * s, 1.5 * s, c(pal::GRADIENT_FROM), grad_to());
+            let sel = ps.selected.min(magic_items.len() - 1);
+            let first = sel.saturating_sub(shown - 1);
+            let name_w = magic_items.iter().map(|c| str_width(&c.name)).max().unwrap_or(8).min(24) + 2;
+            let cells = ((bw - 16.0 * s) / cw) as usize;
+            for (k, cmd) in magic_items.iter().skip(first).take(shown).enumerate() {
+                let iy = ly + 4.0 * s + k as f32 * ch;
+                let on = first + k == sel;
+                if on {
+                    let a = if ps.moved { 0.95 } else { 0.35 };
+                    f.gradient_rect(bx + 4.0 * s, iy, bw - 8.0 * s, ch, 5.0 * s, rgba(pal::GRADIENT_FROM, a), rgba(pal::GRADIENT_TO, a));
+                }
+                let strong = on && ps.moved;
+                let fg = if strong { c(pal::ON_GRADIENT) } else { c(pal::FG) };
+                renderer.text(&mut f, &format!("@{}", cmd.name), bx + 10.0 * s, iy, if strong { fg } else { c(pal::ACCENT_MINT) }, Style::Bold, name_w, None, scale);
+                renderer.text(&mut f, &cmd.title, bx + 10.0 * s + (name_w + 1) as f32 * cw, iy, if strong { fg } else { c(pal::LABEL) }, Style::Regular, cells.saturating_sub(name_w + 1), None, scale);
             }
-            renderer.text(&mut f, title, px + 12.0 * s, iy, if on { c(pal::ON_GRADIENT) } else { c(pal::FG) }, if on { Style::Bold } else { Style::Regular }, cells, None, scale);
         }
     }
 
@@ -708,57 +748,6 @@ fn banner(r: &mut crate::render::Renderer, f: &mut Frame, l: &Layout, cursor_py:
     }
 }
 
-/// Commands matching `filter` as a case-insensitive subsequence, best first.
-pub fn palette_items(all: Vec<(String, String)>, filter: &str) -> Vec<(String, String)> {
-    let fl = filter.to_lowercase();
-    let mut scored: Vec<(i32, (String, String))> = all
-        .into_iter()
-        .filter_map(|(h, t)| {
-            let tl = t.to_lowercase();
-            if fl.is_empty() {
-                return Some((0, (h, t)));
-            }
-            if tl.contains(&fl) {
-                return Some((100 - tl.find(&fl).unwrap() as i32, (h, t)));
-            }
-            let mut it = tl.chars();
-            fl.chars().all(|c| it.any(|x| x == c)).then_some((1, (h, t)))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.into_iter().map(|(_, x)| x).collect()
-}
-
-pub fn palette_key(app: &mut App, wid: &str, key: &Key, _mods: Mods) -> bool {
-    let commands = app.commands();
-    let Some(w) = app.win(wid) else { return true };
-    let Some(p) = &mut w.palette else { return true };
-    let items = palette_items(commands, &p.filter);
-    match key {
-        Key::Escape => w.palette = None,
-        Key::Up => p.selected = p.selected.saturating_sub(1),
-        Key::Down | Key::Tab => p.selected = (p.selected + 1).min(items.len().saturating_sub(1)),
-        Key::Backspace => {
-            p.filter.pop();
-            p.selected = 0;
-        }
-        Key::Enter => {
-            let pick = items.get(p.selected).map(|(h, _)| h.clone());
-            w.palette = None;
-            w.dirty = true;
-            if let Some(h) = pick {
-                app.invoke_command(wid, &h);
-            }
-            return true;
-        }
-        Key::Text(_) => return false,
-        _ => {}
-    }
-    w.dirty = true;
-    true
-}
-
-pub fn _unused(_: Palette) {}
 
 #[cfg(test)]
 mod tests {

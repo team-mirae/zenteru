@@ -72,9 +72,19 @@ _zenteru_preexec() {
 
 _zenteru_line_init() { _zt_osc "133;B"; }
 
+# @info / @version / @zenteru: zenteru writes the splash to the session dir
+# and sends ESC[9236~; print it above the prompt and redraw the command line.
+_zenteru_info() {
+  zle -I
+  [[ -r "${ZENTERU_SESSION_DIR-}/info.ans" ]] && command cat -- "$ZENTERU_SESSION_DIR/info.ans"
+}
+
 # ZLE isn't up yet while .zshenv runs, so hook line-init on the first prompt.
 _zenteru_first_precmd() {
   add-zsh-hook -d precmd _zenteru_first_precmd
+  zle -N _zenteru_info
+  local km
+  for km in emacs viins vicmd; do bindkey -M $km '\e[9236~' _zenteru_info 2>/dev/null; done
   if (( $+functions[add-zle-hook-widget] )); then
     add-zle-hook-widget line-init _zenteru_line_init
   else

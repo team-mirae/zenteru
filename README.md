@@ -51,6 +51,12 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   The rain has four styles: `@rain-drops`, `@rain-blocks` (a fixed matrix of
   blocks that change colour), `@rain-custom` (a Python `GutterDriver` paints
   the matrix, see [docs/PYTHON_API.md](docs/PYTHON_API.md)) and `@rain-off`.
+- **ゼ splash.** At launch, and on `@info`, `@version` or `@zenteru`,
+  zenteru prints ゼ in the gradient as half-block art, with its version and
+  a few system facts beside it (fastfetch style). The shell integration
+  prints it above your prompt without touching your history. `zenteru info`
+  prints it from any terminal, and `ZENTERU_SPLASH=0` turns off the
+  launch splash.
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.

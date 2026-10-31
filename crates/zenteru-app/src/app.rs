@@ -295,6 +295,8 @@ pub struct App {
     /// Latest frame from a custom gutter driver: (width, height, RGBA, when).
     pub gutter_frame: Option<(u32, u32, std::rc::Rc<Vec<u8>>, Instant)>,
     last_gutter_event: (u32, u32, bool, &'static str),
+    /// Show the ゼ splash in the first session at launch.
+    splash_pending: bool,
     last_screen_emit: Instant,
     screen_emit_due: Vec<String>,
 }
@@ -349,6 +351,10 @@ impl App {
                 .unwrap_or(crate::gutter::RainStyle::Drops),
             gutter_frame: None,
             last_gutter_event: (0, 0, false, ""),
+            splash_pending: std::env::var("ZENTERU_SPLASH").map_or_else(
+                |_| crate::settings::load().get("splash").as_bool().unwrap_or(true),
+                |v| v != "0",
+            ),
             last_screen_emit: Instant::now(),
             screen_emit_due: Vec::new(),
         }
@@ -469,6 +475,11 @@ impl App {
                 sel_origin: None,
             },
         );
+        if std::mem::take(&mut self.splash_pending) {
+            // Launch splash: printed before the shell's first prompt.
+            let art = crate::splash::render(&self.splash_info(Some(&sid)));
+            self.with_term(&sid, |t| t.feed(art.as_bytes()));
+        }
         let w = &mut self.windows[wi];
         let at = index.unwrap_or(if w.tabs.is_empty() { 0 } else { w.active + 1 }).min(w.tabs.len());
         w.tabs.insert(at, Tab { id: tid.clone(), session: sid.clone(), title: None });
@@ -1037,6 +1048,39 @@ impl App {
         self.emit("focus", sid.as_deref(), Json::obj().with("window_id", wid).with("active", active));
     }
 
+    pub fn splash_info(&mut self, sid: Option<&str>) -> crate::splash::Info {
+        let scale = self.windows.first().map(|w| w.layout.scale).filter(|s| *s > 0.0).unwrap_or(2.0);
+        let font = self.renderer.fonts(scale).describe();
+        let shell = sid.and_then(|s| self.sessions.get(s)).map(|s| s.s.shell.clone()).filter(|s| !s.is_empty());
+        let mut plugins: Vec<String> = self.plugins.iter().map(|(n, _)| n.clone()).collect();
+        plugins.sort();
+        crate::splash::Info { version: zenteru_text::brand::VERSION.to_string(), shell, font: Some(font), plugins }
+    }
+
+    /// `@info` / `@version` / `@zenteru`: print the splash above the prompt.
+    pub fn show_splash(&mut self, wid: &str) {
+        let Some(sid) = self.win(wid).and_then(|w| w.active_session()).map(String::from) else { return };
+        let art = crate::splash::render(&self.splash_info(Some(&sid)));
+        let Some(s) = self.sessions.get(&sid) else { return };
+        let (alt, editing) = {
+            let t = s.s.term.lock().unwrap();
+            (t.alt_screen(), t.prompt.phase == PromptPhase::Editing && t.prompt.input_start.is_some())
+        };
+        if alt {
+            return;
+        }
+        if editing && matches!(s.s.shell.as_str(), "zsh" | "bash") {
+            // The shell prints it above the prompt and redraws the command
+            // line, so nothing lands in history (shell/zenteru.zsh).
+            let path = s.s.dir.join("info.ans");
+            if std::fs::write(&path, art.as_bytes()).is_ok() {
+                s.s.write(b"\x1b[9236~");
+                return;
+            }
+        }
+        self.with_term(&sid, |t| t.feed(art.as_bytes()));
+    }
+
     pub fn set_rain_style(&mut self, style: crate::gutter::RainStyle) {
         self.rain_style = style;
         crate::settings::set("rain", style.name());
@@ -1442,6 +1486,7 @@ impl App {
                 self.set_font_size(s)
             }
             "reset_font" => self.set_font_size(13.0),
+            "info" | "version" | "zenteru" => self.show_splash(wid),
             n if n.starts_with("rain_") => {
                 if let Some(style) = crate::gutter::RainStyle::parse(&n[5..]) {
                     self.set_rain_style(style);
@@ -2564,6 +2609,9 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.focus_panel", "Focus Side Panel", "panel"),
     ("zenteru.toggle_gutter", "Toggle Line Numbers (ゼロ / codes)", "line-numbers"),
     ("zenteru.sudo_auth", "Set Up Touch ID / YubiKey for sudo…", "sudo-auth"),
+    ("zenteru.info", "zenteru: info (ゼ splash)", "info"),
+    ("zenteru.version", "zenteru: version", "version"),
+    ("zenteru.zenteru", "zenteru", "zenteru"),
     ("zenteru.rain_drops", "Gutter rain: drops (default)", "rain-drops"),
     ("zenteru.rain_blocks", "Gutter rain: blocks (fixed matrix)", "rain-blocks"),
     ("zenteru.rain_custom", "Gutter rain: custom (plugin driver)", "rain-custom"),

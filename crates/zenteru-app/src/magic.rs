@@ -16,8 +16,9 @@ use zenteru_term::json::Json;
 
 use crate::app::{App, Palette};
 
-/// Command names only the plugin that says hello as "hmxv" may claim.
-const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv")];
+/// Command names a plugin may only claim if it says hello as the owner
+/// ("" = zenteru's own built-ins: no plugin may claim them).
+const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("version", ""), ("zenteru", "")];
 
 pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
 pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];

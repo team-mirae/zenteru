@@ -54,6 +54,10 @@ _zenteru_precmd() {
   _zt_at_prompt=1
 }
 
+# @info / @version / @zenteru (bash 4+ can bind shell functions to keys).
+_zenteru_info() { [ -r "${ZENTERU_SESSION_DIR-}/info.ans" ] && cat -- "$ZENTERU_SESSION_DIR/info.ans"; }
+if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then bind -x '"\e[9236~": _zenteru_info' 2>/dev/null; fi
+
 trap '_zenteru_preexec' DEBUG
 PROMPT_COMMAND="_zt_ret=\$?;${PROMPT_COMMAND:+$PROMPT_COMMAND;}_zenteru_precmd"
 case "$PS1" in *'133;B'*) ;; *) PS1="$PS1"'\[\e]133;B\a\]' ;; esac

@@ -5,6 +5,7 @@ mod app;
 mod font;
 mod gutter;
 mod settings;
+mod splash;
 mod magic;
 mod platform;
 mod render;
@@ -17,12 +18,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("sudo-auth") => std::process::exit(sudo_auth::run(&args[1..])),
+        Some("info" | "version") => print!("{}", splash::render(&splash::cli_info())),
         Some("--version" | "-V") => {
             println!("{} {}", zenteru_text::brand::full_name(), zenteru_text::brand::VERSION);
         }
         Some("--help" | "-h") => {
             println!(
-                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru --version",
+                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru info         the ゼ splash with version and system facts\n  zenteru --version",
                 zenteru_text::brand::full_name()
             );
         }

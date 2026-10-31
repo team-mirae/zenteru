@@ -188,6 +188,26 @@ impl Fonts {
         }
     }
 
+    /// e.g. "SF Mono 13pt + Hiragino Sans (SINO_DISPLAY=JA)".
+    pub fn describe(&self) -> String {
+        let fam = |f: &CTFont| {
+            let n = unsafe { f.family_name() }.to_string();
+            // The system monospaced font has a private name; it is SF Mono.
+            if n.starts_with('.') && n.contains("Monospaced") { "SF Mono".to_string() } else { n }
+        };
+        let primary = fam(&self.faces[&Style::Regular]);
+        let cjk = self.cjk.get(&(Script::Han, Style::Regular)).map(|f| fam(f));
+        let sino = match SinoDisplay::current() {
+            SinoDisplay::Ja => "JA",
+            SinoDisplay::Ko => "KO",
+            SinoDisplay::Sg => "SG",
+        };
+        match cjk {
+            Some(c) => format!("{primary} {}pt + {c} (SINO_DISPLAY={sino})", self.size_pt),
+            None => format!("{primary} {}pt", self.size_pt),
+        }
+    }
+
     fn font_for(&self, text: &str, style: Style) -> CFRetained<CTFont> {
         let c = text.chars().next().unwrap_or(' ');
         let sc = script(c);

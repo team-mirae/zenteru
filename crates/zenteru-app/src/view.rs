@@ -648,9 +648,19 @@ fn mouse(a: &mut App, wid: &str, x: f32, y: f32, btn: MouseButton, action: Mouse
         return;
     }
 
+    // A selection drag that started in the panel input keeps going even if
+    // the pointer leaves the box.
+    if a.windows[wi].panel_drag && btn == MouseButton::Left {
+        a.panel_input_mouse(wid, x, y, action, clicks, mods.shift);
+        return;
+    }
     // Side panel.
     if l.panel_w > 0.0 && x >= l.panel_x {
         if action != MouseAction::Press {
+            return;
+        }
+        if btn == MouseButton::Left && inside(a.windows[wi].hits.panel_input, x, y) {
+            a.panel_input_mouse(wid, x, y, action, clicks, mods.shift);
             return;
         }
         let hits = a.windows[wi].hits.clone();
@@ -964,6 +974,7 @@ fn build_menu(d: &AppDelegate) {
     let (edit, _) = submenu(
         "Edit",
         vec![
+            b("Cut", "x", cmd, "cut"),
             b("Copy", "c", cmd, "copy"),
             b("Paste", "v", cmd, "paste"),
             b("Select All", "a", cmd, "select_all"),

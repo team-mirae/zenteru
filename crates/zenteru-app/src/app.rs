@@ -80,6 +80,11 @@ pub struct Hits {
     pub modes: Vec<(String, String, [f32; 4])>,
     pub panel_input: [f32; 4],
     pub panel_close: [f32; 4],
+    /// Laid-out input lines (first char, text), the first one shown, and the
+    /// text origin — to map clicks to char indices.
+    pub panel_lines: Vec<(usize, String)>,
+    pub panel_first_line: usize,
+    pub panel_text_origin: (f32, f32),
     /// Where the IME candidate window should appear (pixels).
     pub ime: [f32; 4],
 }
@@ -115,6 +120,8 @@ pub struct Win {
     pub matrix: (u32, u32),
     /// The gutter is showing rain (a custom driver should send frames).
     pub rain_shown: bool,
+    /// A selection drag in the panel input is in progress.
+    pub panel_drag: bool,
 }
 
 impl Win {
@@ -238,6 +245,8 @@ pub struct Panel {
     pub visible: bool,
     /// Mask the input as ● (setenvvar values, tokens).
     pub input_secret: bool,
+    /// Selection anchor in the input (char index); see textfield.rs.
+    pub anchor: Option<usize>,
     next_msg: u64,
 }
 
@@ -389,6 +398,7 @@ impl App {
             last_frame: None,
             matrix: (0, 0),
             rain_shown: false,
+            panel_drag: false,
         };
         self.windows.push(win);
         self.relayout(&wid);
@@ -550,6 +560,7 @@ impl App {
                     last_frame: None,
                     matrix: (0, 0),
                     rain_shown: false,
+                    panel_drag: false,
                 });
                 wid
             }
@@ -1052,9 +1063,7 @@ impl App {
         }
         if self.windows[wi].focus == Focus::Panel {
             if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
-                let bi = byte_at(&p.input, p.cursor);
-                p.input.insert_str(bi, text);
-                p.cursor += text.chars().count();
+                p.insert(text);
                 p.preedit.clear();
             }
             return;
@@ -1379,8 +1388,33 @@ impl App {
                     }
                 }
             }
+            "copy" | "cut" if self.win(wid).is_some_and(|w| w.focus == Focus::Panel) => {
+                let pid = self.win(wid).and_then(|w| w.panel.clone());
+                if let Some(p) = pid.and_then(|id| self.panels.get_mut(&id)) {
+                    // Never copy a hidden (secret) input.
+                    if let Some(t) = p.selected_text().filter(|_| !p.input_secret) {
+                        platform::set_clipboard_text(&t);
+                    }
+                    if name == "cut" {
+                        p.delete_selection();
+                    }
+                }
+                if let Some(w) = self.win(wid) {
+                    w.dirty = true;
+                }
+            }
             "copy" => self.copy(wid),
+            "cut" => {}
             "paste" => self.paste(wid),
+            "select_all" if self.win(wid).is_some_and(|w| w.focus == Focus::Panel) => {
+                let pid = self.win(wid).and_then(|w| w.panel.clone());
+                if let Some(p) = pid.and_then(|id| self.panels.get_mut(&id)) {
+                    p.select_all();
+                }
+                if let Some(w) = self.win(wid) {
+                    w.dirty = true;
+                }
+            }
             "select_all" => {
                 if let Some(sid) = self.win(wid).and_then(|w| w.active_session()).map(String::from) {
                     if let Some(s) = self.sessions.get_mut(&sid) {
@@ -1490,7 +1524,7 @@ impl App {
         let Some(wi) = self.win_index(wid) else { return };
         if let Some(text) = platform::clipboard_text() {
             if self.windows[wi].focus == Focus::Panel {
-                self.insert_text(wid, &text.replace('\n', " "));
+                self.insert_text(wid, &text.replace("\r\n", " ").replace('\n', " "));
                 return;
             }
             let Some(sid) = self.windows[wi].active_session().map(String::from) else { return };
@@ -1683,10 +1717,17 @@ impl App {
         let conn = self.panels.get(&pid).map(|p| p.conn);
         let Some(p) = self.panels.get_mut(&pid) else { return true };
         match key {
-            Key::Escape => self.windows[wi].focus = Focus::Terminal,
+            Key::Escape => {
+                if p.selection().is_some() {
+                    p.anchor = None;
+                } else {
+                    self.windows[wi].focus = Focus::Terminal;
+                }
+            }
             Key::Enter => {
                 let text = std::mem::take(&mut p.input);
                 p.cursor = 0;
+                p.anchor = None;
                 p.input_secret = false;
                 p.scroll = 0;
                 if !text.trim().is_empty() {
@@ -1695,31 +1736,45 @@ impl App {
                     }
                 }
             }
-            Key::Backspace => {
-                if mods.alt || mods.cmd {
-                    let start = if mods.cmd { 0 } else { word_left_chars(&p.input, p.cursor) };
-                    let (a, b) = (byte_at(&p.input, start), byte_at(&p.input, p.cursor));
-                    p.input.replace_range(a..b, "");
-                    p.cursor = start;
-                } else if p.cursor > 0 {
-                    let (a, b) = (byte_at(&p.input, p.cursor - 1), byte_at(&p.input, p.cursor));
-                    p.input.replace_range(a..b, "");
-                    p.cursor -= 1;
+            Key::Backspace | Key::Delete => {
+                if !p.delete_selection() {
+                    let back = *key == Key::Backspace;
+                    let n = p.len_chars();
+                    let (from, to) = match (back, mods.cmd, mods.alt) {
+                        (true, true, _) => (0, p.cursor),
+                        (true, _, true) => (word_left_chars(&p.input, p.cursor), p.cursor),
+                        (true, _, _) => (p.cursor.saturating_sub(1), p.cursor),
+                        (false, true, _) => (p.cursor, n),
+                        (false, _, true) => (p.cursor, word_right_chars(&p.input, p.cursor)),
+                        (false, _, _) => (p.cursor, (p.cursor + 1).min(n)),
+                    };
+                    if from < to {
+                        p.anchor = Some(from);
+                        p.cursor = to;
+                        p.delete_selection();
+                    }
                 }
             }
-            Key::Delete => {
-                let n = p.input.chars().count();
-                if p.cursor < n {
-                    let (a, b) = (byte_at(&p.input, p.cursor), byte_at(&p.input, p.cursor + 1));
-                    p.input.replace_range(a..b, "");
+            Key::Left | Key::Right | Key::Home | Key::End => {
+                let n = p.len_chars();
+                let left = matches!(key, Key::Left | Key::Home);
+                // Without ⇧, an arrow collapses a selection to its edge.
+                if !mods.shift && matches!(key, Key::Left | Key::Right) && !mods.cmd && !mods.alt {
+                    if let Some((a, b)) = p.selection() {
+                        p.move_to(if left { a } else { b }, false);
+                        self.windows[wi].dirty = true;
+                        return true;
+                    }
                 }
-            }
-            Key::Left => {
-                p.cursor = if mods.cmd { 0 } else if mods.alt { word_left_chars(&p.input, p.cursor) } else { p.cursor.saturating_sub(1) }
-            }
-            Key::Right => {
-                let n = p.input.chars().count();
-                p.cursor = if mods.cmd { n } else if mods.alt { word_right_chars(&p.input, p.cursor) } else { (p.cursor + 1).min(n) }
+                let to = match (key, mods.cmd, mods.alt) {
+                    (Key::Home, ..) | (Key::Left, true, _) => 0,
+                    (Key::End, ..) | (Key::Right, true, _) => n,
+                    (Key::Left, _, true) => word_left_chars(&p.input, p.cursor),
+                    (Key::Right, _, true) => word_right_chars(&p.input, p.cursor),
+                    (Key::Left, ..) => p.cursor.saturating_sub(1),
+                    _ => (p.cursor + 1).min(n),
+                };
+                p.move_to(to, mods.shift);
             }
             Key::Tab => {
                 if !p.modes.is_empty() {
@@ -1736,6 +1791,12 @@ impl App {
             Key::Text(t) if mods.ctrl && t == "u" => {
                 p.input.clear();
                 p.cursor = 0;
+                p.anchor = None;
+            }
+            Key::Text(t) if mods.ctrl && t == "a" => p.move_to(0, mods.shift),
+            Key::Text(t) if mods.ctrl && t == "e" => {
+                let n = p.len_chars();
+                p.move_to(n, mods.shift);
             }
             Key::Text(_) if mods.ctrl => {}
             Key::Text(_) => return false,
@@ -2223,6 +2284,7 @@ impl App {
                         scroll: 0,
                         visible: false,
                         input_secret: false,
+                        anchor: None,
                         next_msg: 1,
                     },
                 );
@@ -2293,6 +2355,7 @@ impl App {
                         "panel.set_input" => {
                             pan.input = p.get("text").as_str().unwrap_or("").to_string();
                             pan.cursor = pan.input.chars().count();
+                            pan.anchor = None;
                             pan.input_secret = p.get("secret").as_bool().unwrap_or(false);
                             Json::obj()
                         }
@@ -2354,7 +2417,15 @@ impl App {
                             "Down" => Key::Down,
                             other => Key::Text(other.to_string()),
                         };
-                        if !self.key_down(&wid, key.clone(), Mods::default(), false) {
+                        let m = p.get("mods").as_str().unwrap_or("");
+                        let mods = Mods { shift: m.contains("shift"), ctrl: m.contains("ctrl"), alt: m.contains("alt"), cmd: m.contains("cmd") };
+                        let key = match key {
+                            Key::Text(t) if t == "Left" => Key::Left,
+                            Key::Text(t) if t == "Right" => Key::Right,
+                            Key::Text(t) if t == "Delete" => Key::Delete,
+                            other => other,
+                        };
+                        if !self.key_down(&wid, key.clone(), mods, false) {
                             if let Key::Text(t) = key {
                                 self.insert_text(&wid, &t);
                             }
@@ -2364,7 +2435,10 @@ impl App {
                 }
                 let w = self.windows.iter().find(|w| w.id == wid);
                 let pal = w.and_then(|w| w.palette.as_ref());
+                let panel = w.and_then(|w| w.panel.clone()).and_then(|id| self.panels.get(&id));
                 ok(Json::obj()
+                    .with("panel_input", panel.map(|p| p.input.clone()))
+                    .with("panel_selection", panel.and_then(|p| p.selected_text()))
                     .with("magic_open", pal.is_some())
                     .with("magic_text", pal.map(|p| p.text.clone()))
                     .with("magic_message", pal.and_then(|p| p.message.clone())))
@@ -2681,5 +2755,44 @@ fn parse_cell(v: &Json) -> [u8; 4] {
             [c(0, 0.0), c(1, 0.0), c(2, 0.0), c(3, 255.0)]
         }
         _ => [0; 4],
+    }
+}
+
+impl App {
+    /// Mouse in the panel's input box: click places the caret, drag
+    /// selects, double-click selects a letterblock, triple-click all.
+    pub fn panel_input_mouse(&mut self, wid: &str, x: f32, y: f32, action: zenteru_term::input::MouseAction, clicks: isize, shift: bool) {
+        use zenteru_term::input::MouseAction;
+        let Some(wi) = self.win_index(wid) else { return };
+        let w = &self.windows[wi];
+        let Some(pid) = w.panel.clone() else { return };
+        let (ox, oy) = w.hits.panel_text_origin;
+        let (cw, ch) = (w.layout.cell_w, w.layout.cell_h);
+        let lines = w.hits.panel_lines.clone();
+        let first = w.hits.panel_first_line;
+        if lines.is_empty() {
+            return;
+        }
+        let line = (((y - oy) / ch).floor().max(0.0) as usize + first).min(lines.len() - 1);
+        let at = crate::textfield::char_at(&lines, line, ((x - ox) / cw).max(0.0));
+        let Some(p) = self.panels.get_mut(&pid) else { return };
+        match action {
+            MouseAction::Press => {
+                match clicks {
+                    2 => p.select_block(at),
+                    n if n >= 3 => p.select_all(),
+                    _ => p.move_to(at, shift),
+                }
+                self.windows[wi].panel_drag = clicks <= 1;
+                self.windows[wi].focus = Focus::Panel;
+            }
+            MouseAction::Motion => {
+                if self.windows[wi].panel_drag {
+                    p.move_to(at, true);
+                }
+            }
+            MouseAction::Release => self.windows[wi].panel_drag = false,
+        }
+        self.windows[wi].dirty = true;
     }
 }

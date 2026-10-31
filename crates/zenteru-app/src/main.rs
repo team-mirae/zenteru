@@ -9,6 +9,7 @@ mod magic;
 mod platform;
 mod render;
 mod sudo_auth;
+mod textfield;
 mod ui;
 mod view;
 

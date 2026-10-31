@@ -601,13 +601,19 @@ pub fn draw(app: &mut App, wid: &str) {
                 y += ch + 4.0 * s;
             }
             let header_bottom = y;
-            // Input box at the bottom.
+            // Input box at the bottom: a real text field (textfield.rs).
             let shown_input = if p.input_secret { "●".repeat(p.input.chars().count()) } else { p.input.clone() };
-            let input_lines = {
+            let field_cells = inner_cells.saturating_sub(2);
+            // With IME composition in progress, show it inline at the caret.
+            let display = if p.preedit.is_empty() {
+                shown_input.clone()
+            } else {
                 let mut t = shown_input.clone();
                 t.insert_str(crate::app::byte_at(&t, p.cursor), &p.preedit);
-                wrap(&t, inner_cells.saturating_sub(2)).len().clamp(1, 6)
+                t
             };
+            let laid = crate::textfield::layout(&display, field_cells);
+            let input_lines = laid.len().clamp(1, 6);
             let ih = input_lines as f32 * ch + 10.0 * s;
             let iy = l.h - ih - pad;
             let focused = win.focus == Focus::Panel && win.handle.is_key();
@@ -625,33 +631,42 @@ pub fn draw(app: &mut App, wid: &str) {
                 renderer.text(&mut f, ph, input_x, text_y, rgba(pal::LABEL, 0.6), Style::Italic, inner_cells - 1, None, scale);
             }
             {
-                let before: String = shown_input.chars().take(p.cursor).collect();
-                let after: String = shown_input.chars().skip(p.cursor).collect();
-                let full = format!("{before}{}{after}", p.preedit);
-                let lines = wrap(&full, inner_cells.saturating_sub(2));
-                let first = lines.len().saturating_sub(6);
+                // Keep the caret's line in view.
+                let caret_at = p.cursor + p.preedit.chars().count();
+                let (caret_line, caret_col) = crate::textfield::position_of(&laid, caret_at);
+                let first = caret_line.saturating_sub(input_lines - 1).min(laid.len().saturating_sub(input_lines));
+                let sel = if p.preedit.is_empty() { p.selection() } else { None };
                 let g = Grad { x0: input_x, x1: input_x + inner_cells as f32 * cw, to: grad_to() };
-                for (k, line) in lines[first..].iter().enumerate() {
-                    let ly = text_y + k as f32 * ch;
+                for (k, (lstart, line)) in laid.iter().enumerate().skip(first).take(input_lines) {
+                    let ly = text_y + (k - first) as f32 * ch;
+                    if let Some((a, b)) = sel {
+                        let n = line.chars().count();
+                        let (la, lb) = (a.max(*lstart), b.min(lstart + n));
+                        if la < lb {
+                            let pre: String = line.chars().take(la - lstart).collect();
+                            let mid: String = line.chars().skip(la - lstart).take(lb - la).collect();
+                            let sx = input_x + str_width(&pre) as f32 * cw;
+                            f.rect(sx, ly, (str_width(&mid) as f32 * cw).max(cw * 0.5), ch, c(pal::SELECT_BG));
+                        }
+                    }
                     if p.input_secret {
                         renderer.text(&mut f, line, input_x, ly, c(pal::GRADIENT_FROM), Style::Bold, inner_cells, Some(g), scale);
                     } else {
                         renderer.text(&mut f, line, input_x, ly, c(pal::FG), Style::Regular, inner_cells, None, scale);
                     }
                 }
-                // Caret (after wrapping `before + preedit`).
-                let pre = wrap(&format!("{before}{}", p.preedit), inner_cells.saturating_sub(2));
-                let row = pre.len().saturating_sub(1).saturating_sub(first);
-                let col = pre.last().map(|s| str_width(s)).unwrap_or(0);
-                let (kx, ky) = (input_x + col as f32 * cw, text_y + row as f32 * ch);
+                let (kx, ky) = (input_x + caret_col as f32 * cw, text_y + (caret_line - first) as f32 * ch);
                 if focused {
                     f.rect(kx, ky, 2.0 * s, ch, c(pal::CURSOR));
                     hits_ime(&mut hits, kx, ky, cw, ch);
                 }
                 if !p.preedit.is_empty() {
-                    let pre_x = input_x + str_width(&wrap(&before, inner_cells.saturating_sub(2)).last().cloned().unwrap_or_default()) as f32 * cw;
-                    f.gradient_rect(pre_x, ky + ch - 2.0 * s, (str_width(&p.preedit) as f32 * cw).max(cw), 2.0 * s, 0.0, c(pal::GRADIENT_FROM), grad_to());
+                    let pw_cells = str_width(&p.preedit) as f32;
+                    f.gradient_rect(kx - pw_cells * cw, ky + ch - 2.0 * s, (pw_cells * cw).max(cw), 2.0 * s, 0.0, c(pal::GRADIENT_FROM), grad_to());
                 }
+                hits.panel_lines = if p.preedit.is_empty() { laid.clone() } else { crate::textfield::layout(&shown_input, field_cells) };
+                hits.panel_first_line = first;
+                hits.panel_text_origin = (input_x, text_y);
             }
             // Messages, bottom-up.
             let mut lines: Vec<(Rgba, Style, String, Option<(u64, Vec<(String, String)>)>)> = Vec::new();

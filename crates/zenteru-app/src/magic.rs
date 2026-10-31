@@ -72,26 +72,48 @@ impl App {
         if !shell_fg && !remote {
             return false;
         }
-        // Local shell with zenteru's integration: exact.
-        if shell_fg && t.prompt.phase == zenteru_term::term::PromptPhase::Editing && t.prompt.input_start.is_some() {
-            let (line, cursor) = t.edit_line();
-            return line.trim().is_empty() && cursor == 0;
+        let (cy, cx) = t.cursor_abs();
+        let row = t.screen().get(t.cursor.y);
+        // Only the cell under the cursor matters: a right-hand prompt
+        // (RPROMPT: time, git status) further along the row doesn't count.
+        let at_cursor_blank = row.and_then(|r| r.cells.get(cx)).is_none_or(|c| c.c == ' ' && c.extra.is_none());
+        // Local shell with zenteru's integration.
+        if shell_fg && t.prompt.phase == zenteru_term::term::PromptPhase::Editing {
+            if let Some((il, ic)) = t.prompt.input_start {
+                if il == cy {
+                    return cx == ic && at_cursor_blank;
+                }
+                // The prompt was redrawn elsewhere without a new mark (zle -I
+                // after @info, ⌃L, a resize): the cursor sitting at the input
+                // column of a fresh row still means an empty line — unless
+                // this row is the continuation of a wrapped command.
+                let continued = cy > 0 && t.line(cy - 1).is_some_and(|r| r.wrapped);
+                if !continued && cx == ic {
+                    return at_cursor_blank;
+                }
+                if il < cy && !continued {
+                    // Fall through to the screen heuristics below.
+                } else {
+                    return false;
+                }
+            }
         }
-        // ssh / no integration: nothing typed since Enter, and the cursor
-        // sits at the end of something that looks like a shell prompt.
-        if s.line_typed {
+        // ssh / no integration: nothing on the line (typed minus deleted),
+        // and the cursor right after something that looks like a prompt.
+        if s.line_len > 0 {
             return false;
         }
-        let Some(row) = t.screen().get(t.cursor.y) else { return false };
+        let Some(row) = row else { return false };
         let mut before = String::new();
-        let mut after = String::new();
         for (x, c) in row.cells.iter().enumerate() {
-            if c.is_spacer() {
-                continue;
+            if x >= cx {
+                break;
             }
-            if x < t.cursor.x { c.push_text(&mut before) } else { c.push_text(&mut after) }
+            if !c.is_spacer() {
+                c.push_text(&mut before);
+            }
         }
-        after.trim().is_empty() && looks_like_prompt(&before)
+        at_cursor_blank && looks_like_prompt(&before)
     }
 
     /// `@` (or ＠) typed: open the bar if allowed. Returns true if consumed.

@@ -213,6 +213,8 @@ pub struct Sess {
     pub queued: Vec<Vec<u8>>,
     /// Something was typed on the current line (since Enter / ⌃C / ⌃U).
     pub line_typed: bool,
+    /// Rough length of what's been typed on the line (backspace counts down).
+    pub line_len: usize,
     /// Since when a non-shell program has had the terminal (gutter rain).
     pub app_since: Option<Instant>,
     pub vars: HashMap<String, String>,
@@ -476,6 +478,7 @@ impl App {
                 comp_pending: None,
                 queued: Vec::new(),
                 line_typed: false,
+                line_len: 0,
                 app_since: None,
                 vars: HashMap::new(),
                 scroll_accum: 0.0,
@@ -1195,11 +1198,31 @@ impl App {
             return;
         }
         s.selection = None;
-        if bytes.iter().any(|&b| matches!(b, b'\r' | b'\n' | 0x03 | 0x15)) {
-            s.line_typed = false;
-        } else if bytes.iter().any(|&b| b >= 0x20 && b != 0x7f) {
-            s.line_typed = true;
+        // What's on the line, roughly: printable input counts up, ⌫ down,
+        // Enter / ⌃C / ⌃U reset (for the `@` trigger without integration).
+        let mut len = s.line_len;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\r' | b'\n' | 0x03 | 0x15 => len = 0,
+                0x7f | 0x08 => len = len.saturating_sub(1),
+                0x1b => {
+                    // Skip an escape sequence (arrows etc. don't change the length).
+                    i += 1;
+                    if i < bytes.len() && (bytes[i] == b'[' || bytes[i] == b'O') {
+                        i += 1;
+                        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                            i += 1;
+                        }
+                    }
+                }
+                b if b >= 0x20 && (b & 0xC0) != 0x80 => len += 1,
+                _ => {}
+            }
+            i += 1;
         }
+        s.line_len = len;
+        s.line_typed = len > 0;
         s.s.term.lock().unwrap().scroll_to_bottom();
         if let Some(api) = &self.api {
             if !s.pwd.active && api.has_subscribers("keystroke") {

@@ -273,21 +273,109 @@ fn media(cmd: MediaCommand) -> bool {
     }
 }
 
-// ---- volume -------------------------------------------------------------
+// ---- volume (CoreAudio, the default output device) ----------------------
 
-fn osascript(s: &str) -> Option<String> {
-    let o = Command::new("/usr/bin/osascript").arg("-e").arg(s).output().ok()?;
-    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+#[link(name = "AudioToolbox", kind = "framework")]
+unsafe extern "C" {
+    fn AudioHardwareServiceHasProperty(obj: u32, addr: *const PropAddr) -> u8;
+    fn AudioHardwareServiceIsPropertySettable(obj: u32, addr: *const PropAddr, settable: *mut u8) -> i32;
+    fn AudioHardwareServiceGetPropertyData(obj: u32, addr: *const PropAddr, qsize: u32, qdata: *const c_void, size: *mut u32, data: *mut c_void) -> i32;
+    fn AudioHardwareServiceSetPropertyData(obj: u32, addr: *const PropAddr, qsize: u32, qdata: *const c_void, size: u32, data: *const c_void) -> i32;
 }
 
-fn volume_now() -> Option<u32> {
-    osascript("output volume of (get volume settings)")?.parse().ok()
+#[link(name = "CoreAudio", kind = "framework")]
+unsafe extern "C" {
+    fn AudioObjectHasProperty(obj: u32, addr: *const PropAddr) -> u8;
+    fn AudioObjectIsPropertySettable(obj: u32, addr: *const PropAddr, settable: *mut u8) -> i32;
+    fn AudioObjectSetPropertyData(obj: u32, addr: *const PropAddr, qsize: u32, qdata: *const c_void, size: u32, data: *const c_void) -> i32;
 }
 
-fn set_volume(v: u32) -> Result<String, String> {
-    let v = v.min(100);
-    osascript(&format!("set volume output volume {v} without output muted")).ok_or("could not set the volume")?;
-    Ok(format!("🔊 {v}%"))
+const DEFAULT_OUTPUT: u32 = 0x644F_7574; // 'dOut'
+const OBJECT_NAME: u32 = 0x6C6E_616D; // 'lnam'
+const VIRTUAL_MAIN_VOLUME: u32 = 0x766D_7663; // 'vmvc'
+const DEVICE_MUTE: u32 = 0x6D75_7465; // 'mute'
+const SCOPE_OUTPUT: u32 = 0x6F75_7470; // 'outp'
+
+fn out_addr(selector: u32) -> PropAddr {
+    PropAddr { selector, scope: SCOPE_OUTPUT, element: 0 }
+}
+
+struct Output {
+    id: u32,
+    name: String,
+}
+
+fn default_output() -> Result<Output, String> {
+    unsafe {
+        let mut id = 0u32;
+        let mut size = 4u32;
+        if AudioObjectGetPropertyData(SYSTEM_OBJECT, &addr(DEFAULT_OUTPUT), 0, std::ptr::null(), &mut size, (&mut id as *mut u32).cast()) != 0 || id == 0 {
+            return Err("no audio output device".into());
+        }
+        let mut cf: *const c_void = std::ptr::null();
+        size = std::mem::size_of::<*const c_void>() as u32;
+        let name = if AudioObjectGetPropertyData(id, &addr(OBJECT_NAME), 0, std::ptr::null(), &mut size, (&mut cf as *mut *const c_void).cast()) == 0 && !cf.is_null() {
+            let s: objc2_core_foundation::CFRetained<objc2_core_foundation::CFString> =
+                objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new(cf as *mut objc2_core_foundation::CFString).unwrap());
+            s.to_string()
+        } else {
+            "the audio device".to_string()
+        };
+        Ok(Output { id, name })
+    }
+}
+
+fn no_gain(out: &Output) -> String {
+    format!("{} doesn't support software gain — it's a fixed-level (analog) output, so set the volume on the DAC / amp itself", out.name)
+}
+
+fn volume_settable(out: &Output) -> bool {
+    let a = out_addr(VIRTUAL_MAIN_VOLUME);
+    let mut settable = 0u8;
+    unsafe { AudioHardwareServiceHasProperty(out.id, &a) != 0 && AudioHardwareServiceIsPropertySettable(out.id, &a, &mut settable) == 0 && settable != 0 }
+}
+
+fn volume_now(out: &Output) -> Result<u32, String> {
+    if !volume_settable(out) {
+        return Err(no_gain(out));
+    }
+    let mut v = 0f32;
+    let mut size = 4u32;
+    let r = unsafe { AudioHardwareServiceGetPropertyData(out.id, &out_addr(VIRTUAL_MAIN_VOLUME), 0, std::ptr::null(), &mut size, (&mut v as *mut f32).cast()) };
+    if r != 0 {
+        return Err(no_gain(out));
+    }
+    Ok((v * 100.0).round() as u32)
+}
+
+fn set_volume(out: &Output, v: u32) -> Result<String, String> {
+    if !volume_settable(out) {
+        return Err(no_gain(out));
+    }
+    let f = v.min(100) as f32 / 100.0;
+    let r = unsafe { AudioHardwareServiceSetPropertyData(out.id, &out_addr(VIRTUAL_MAIN_VOLUME), 0, std::ptr::null(), 4, (&f as *const f32).cast()) };
+    if r != 0 {
+        return Err(format!("{}: setting the volume failed (CoreAudio error {r})", out.name));
+    }
+    if v > 0 {
+        let _ = set_mute(out, false);
+    }
+    Ok(format!("🔊 {v}% · {}", out.name))
+}
+
+fn set_mute(out: &Output, mute: bool) -> Result<String, String> {
+    let a = out_addr(DEVICE_MUTE);
+    let mut settable = 0u8;
+    let ok = unsafe { AudioObjectHasProperty(out.id, &a) != 0 && AudioObjectIsPropertySettable(out.id, &a, &mut settable) == 0 && settable != 0 };
+    if !ok {
+        return Err(format!("{} can't be muted from software — use the DAC / amp", out.name));
+    }
+    let v: u32 = mute as u32;
+    let r = unsafe { AudioObjectSetPropertyData(out.id, &a, 0, std::ptr::null(), 4, (&v as *const u32).cast()) };
+    if r != 0 {
+        return Err(format!("{}: {} failed (CoreAudio error {r})", out.name, if mute { "mute" } else { "unmute" }));
+    }
+    Ok(if mute { format!("🔇 muted · {}", out.name) } else { format!("🔊 unmuted · {}", out.name) })
 }
 
 /// up | down | min | max | 0–100 | 0.00–1.00 (a trailing `f` is fine).
@@ -329,13 +417,14 @@ pub fn run(line: &str) -> Result<String, String> {
         "toggle" | "playpause" => media(MediaCommand::Toggle).then(|| "⏯".to_string()).ok_or_else(|| "toggle failed".into()),
         "next" | "skip" => media(MediaCommand::Next).then(|| "⏭ next".to_string()).ok_or_else(|| "next failed".into()),
         "prev" | "previous" | "back" => media(MediaCommand::Previous).then(|| "⏮ previous".to_string()).ok_or_else(|| "previous failed".into()),
-        "mute" => osascript("set volume with output muted").map(|_| "🔇 muted".to_string()).ok_or_else(|| "could not mute".into()),
-        "unmute" => osascript("set volume without output muted").map(|_| format!("🔊 {}%", volume_now().unwrap_or(0))).ok_or_else(|| "could not unmute".into()),
+        "mute" => set_mute(&default_output()?, true),
+        "unmute" => set_mute(&default_output()?, false),
         "volume" | "vol" => {
-            let now = volume_now().unwrap_or(50);
+            let out = default_output()?;
+            let now = volume_now(&out)?;
             match rest.first() {
-                None => Ok(format!("🔊 {now}%")),
-                Some(arg) => set_volume(parse_volume(arg, now)?),
+                None => Ok(format!("🔊 {now}% · {}", out.name)),
+                Some(arg) => set_volume(&out, parse_volume(arg, now)?),
             }
         }
         other => Err(format!("music: unknown subcommand {other:?} (focus, play, pause, mute, unmute, volume, next, prev)")),

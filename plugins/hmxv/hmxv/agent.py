@@ -308,6 +308,9 @@ class Agent:
                 await self.show_status("reading screen…")
                 n = int(args.get("lines_of_scrollback") or 0)
                 return await self.terminal.read_screen(sid, n), False, False
+            if name == "resolve_line":
+                await self.show_status(f"looking up line {args.get('ref')}…")
+                return await self.terminal.resolve_line(sid, str(args.get("ref", "")), int(args.get("context") or 2)), False, False
             if name == "get_prompt_state":
                 st = await self.terminal.prompt_state(sid)
                 return self.terminal.redact(json.dumps(st, ensure_ascii=False)), False, False

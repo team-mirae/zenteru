@@ -18,6 +18,10 @@ identify the program and its state from the screen contents and context.
 sending, call wait_for_output and check that it worked; try another approach if not.
 - When done, call finish with a short summary of what happened (and, when \
 helpful, one tip for next time, e.g. "In vim, :q! quits without saving").
+- Line references: in shell mode zenteru numbers lines in a left gutter. ゼロ is the \
+cursor's line and -1, -2, ... count upward; each line also has a 3-character code \
+(e.g. K7Q). When the user cites "-12" or "K7Q", call resolve_line. Cite lines the same \
+way in your replies (e.g. "the error on -4 (M7Y)").
 - Keep chat replies short and practical. Use plain text; no headings.
 
 send_keys notation: plain text is typed literally. Named keys in angle brackets: \
@@ -120,3 +124,15 @@ Commands:
   /clear — clear the conversation
   /stop — stop the current task
   /help — this help"""
+
+
+# After read_screen: fetch a line the user cites by gutter reference.
+TOOLS.insert(1, ToolSpec(
+        name="resolve_line",
+        description="Fetch a terminal line the user cites by its zenteru gutter reference: 'ゼロ' or '0' "
+                    "(the cursor's line), '-N' (N lines above it, any distance back in scrollback), or a "
+                    "3-character line code such as 'K7Q'. Returns the line with a few lines of context.",
+        parameters=_obj({"ref": {"type": "string", "description": "ゼロ, -N or a 3-character code"},
+                         "context": {"type": "integer", "description": "Lines of context on each side (0-20)."}},
+                        ["ref"]),
+    ))

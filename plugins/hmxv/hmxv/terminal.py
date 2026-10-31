@@ -99,7 +99,9 @@ class Terminal:
         cursor = scr.get("cursor") or {}
         cursor_abs = int(scr.get("first_line", 0)) + int(cursor.get("y", 0))
         texts = mask_lines(lines, first, self._spans(sid), pw_now, cursor_abs)
-        meta = {"cols": scr.get("cols"), "rows": scr.get("rows"), "cursor": cursor,
+        # Gutter references (shell mode): relative index and 3-character code.
+        refs = [(ln.get("rel"), ln.get("code")) for ln in lines]
+        meta = {"cols": scr.get("cols"), "rows": scr.get("rows"), "cursor": cursor, "refs": refs,
                 "alt_screen": scr.get("alt_screen", info.get("alt_screen")),
                 "visible_first_line": int(scr.get("first_line", 0)), "first_line": first,
                 "password_mode": pw_now}
@@ -113,11 +115,51 @@ class Terminal:
         out = [f"[screen {meta['cols']}x{meta['rows']}, alt_screen={meta['alt_screen']}, "
                f"cursor row={meta['cursor'].get('y')} col={meta['cursor'].get('x')}"
                + (", PASSWORD PROMPT ACTIVE" if meta["password_mode"] else "") + "]"]
+        refs = meta.get("refs") or []
+        shell_mode = not meta["alt_screen"] and any(r and r[0] is not None for r in refs)
+        if shell_mode:
+            out.append("[left margin = zenteru line refs: ゼロ is the cursor's line, -1 the line above, ...; "
+                       "then the line's 3-character code. The user may cite either.]")
         for i, t in enumerate(texts):
             if i == n_back and n_back:
                 out.append("----- visible screen -----")
             row = i - n_back
-            out.append(f"{row:>3}| {t}" if row >= 0 else f"   | {t}")
+            rel, code = refs[i] if i < len(refs) else (None, None)
+            if shell_mode and rel is not None and rel <= 0:
+                label = "ゼロ" if rel == 0 else str(rel)
+                out.append(f"{label:>5} {code or '   '}| {t}")
+            elif shell_mode:
+                out.append(f"{'':>5} {'':3}| {t}")
+            else:
+                out.append(f"{row:>3}| {t}" if row >= 0 else f"   | {t}")
+        return self.redact("\n".join(out))
+
+    async def resolve_line(self, sid: str, ref: str, context: int = 2) -> str:
+        """A line cited by gutter reference (ゼロ / -N / code), with context."""
+        r = await self.conn.call("session.resolve_line", {"session_id": sid, "ref": ref})
+        matches = r.get("matches") or []
+        if not matches:
+            return f"No line matches {ref!r} (it may have scrolled out of the scrollback)."
+        m = matches[0]
+        line = int(m.get("line", 0))
+        context = max(0, min(int(context or 0), 20))
+        try:
+            scr = await self.conn.call("session.get_screen", {"session_id": sid, "first_line": max(0, line - context),
+                                                               "count": 2 * context + 1})
+            lines = list(scr.get("lines") or [])
+        except ProtocolError:
+            lines = [m]
+        pw_now = await self.password_mode(sid)
+        out = [f"[{ref} → line {m.get('rel_label')} code {m.get('code')}"
+               + (f", landed {m.get('landed_ms')} ms since epoch" if m.get("landed_ms") else "")
+               + (f"; {len(matches) - 1} older line(s) share this code" if r.get("ambiguous") else "") + "]"]
+        for ln in lines:
+            hidden = ln.get("password") or (pw_now and ln.get("rel") == 0)
+            text = "[hidden: password prompt]" if hidden else ln.get("text", "")
+            mark = ">" if ln.get("line") == line else " "
+            rel = ln.get("rel")
+            label = "ゼロ" if rel == 0 else str(rel)
+            out.append(f"{mark}{label:>5} {ln.get('code') or '   '}| {text}")
         return self.redact("\n".join(out))
 
     async def prompt_state(self, sid: str) -> dict:

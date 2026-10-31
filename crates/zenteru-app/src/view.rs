@@ -981,6 +981,7 @@ fn build_menu(d: &AppDelegate) {
             b("Actual Size", "0", cmd, "reset_font"),
             sep(),
             b("Focus Side Panel", "`", NSEventModifierFlags::Control, "focus_panel"),
+            b("Line Numbers (ゼロ / codes)", "l", NSEventModifierFlags::Command | NSEventModifierFlags::Shift, "toggle_gutter"),
             item("Enter Full Screen", Some(sel!(toggleFullScreen:)), "f", NSEventModifierFlags::Command | NSEventModifierFlags::Control, d, None),
         ],
     );

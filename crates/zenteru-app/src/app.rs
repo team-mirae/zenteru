@@ -22,6 +22,9 @@ pub const TAB_BAR_PT: f64 = 38.0;
 pub const PAD_PT: f64 = 6.0;
 pub const PANEL_PT: f64 = 400.0;
 pub const TRAFFIC_LIGHTS_PT: f64 = 78.0;
+/// Gutter: relative index (6 cells, fits ゼロ and -99999), a space, the
+/// 3-character line code, a space.
+pub const GUTTER_CELLS: usize = 11;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -43,6 +46,9 @@ pub struct Layout {
     pub cell_h: f32,
     pub panel_x: f32,
     pub panel_w: f32,
+    /// Gutter left edge and width in pixels (0 when off).
+    pub gutter_x: f32,
+    pub gutter_w: f32,
 }
 
 pub struct Tab {
@@ -256,6 +262,8 @@ pub struct App {
     pub resources: PathBuf,
     pub key_window: Option<String>,
     pending_alerts: Vec<(ConnId, Json, String, String, Vec<String>)>,
+    /// Shell-mode line gutter (relative index + line code).
+    pub gutter: bool,
     last_screen_emit: Instant,
     screen_emit_due: Vec<String>,
 }
@@ -301,6 +309,7 @@ impl App {
             resources,
             key_window: None,
             pending_alerts: Vec::new(),
+            gutter: std::env::var("ZENTERU_GUTTER").map_or(true, |v| v != "0"),
             last_screen_emit: Instant::now(),
             screen_emit_due: Vec::new(),
         }
@@ -543,14 +552,15 @@ impl App {
         let tabbar_h = (TAB_BAR_PT as f32 * s).round();
         let pad = (PAD_PT as f32 * s).round();
         let panel_w = if panel_visible { (PANEL_PT as f32 * s).min(w * 0.5).round() } else { 0.0 };
-        let cols = (((w - panel_w - 2.0 * pad) / cw).floor() as usize).max(10);
+        let gutter_w = if self.gutter { GUTTER_CELLS as f32 * cw } else { 0.0 };
+        let cols = (((w - panel_w - 2.0 * pad - gutter_w) / cw).floor() as usize).max(10);
         let rows = (((h - tabbar_h - 2.0 * pad) / ch).floor() as usize).max(3);
         let layout = Layout {
             scale,
             w,
             h,
             tabbar_h,
-            term_x: pad,
+            term_x: pad + gutter_w,
             term_y: tabbar_h + pad,
             cols,
             rows,
@@ -558,6 +568,8 @@ impl App {
             cell_h: ch,
             panel_x: w - panel_w,
             panel_w,
+            gutter_x: pad,
+            gutter_w,
         };
         let win = &mut self.windows[wi];
         win.handle.set_drawable_size(w, h, scale);
@@ -1301,6 +1313,16 @@ impl App {
                 self.set_font_size(s)
             }
             "reset_font" => self.set_font_size(13.0),
+            "toggle_gutter" => {
+                self.gutter = !self.gutter;
+                let ids: Vec<String> = self.windows.iter().map(|w| w.id.clone()).collect();
+                for id in ids {
+                    if let Some(w) = self.win(&id) {
+                        w.layout.cols = 0;
+                    }
+                    self.relayout(&id);
+                }
+            }
             "palette" => {
                 if let Some(w) = self.win(wid) {
                     w.palette = Some(Palette { filter: String::new(), selected: 0 });
@@ -1933,8 +1955,7 @@ impl App {
                 let lines: Vec<Json> = (first..end)
                     .map(|l| {
                         let row = t.line(l);
-                        Json::obj()
-                            .with("text", row.map(|r| r.text()).unwrap_or_default())
+                        line_json(&t, l)
                             .with("hard_eol", row.is_none_or(|r| !r.wrapped))
                             .with("password", pw && l == cursor_abs)
                     })
@@ -1946,6 +1967,16 @@ impl App {
                     .with("first_line", first)
                     .with("alt_screen", t.alt_screen())
                     .with("lines", Json::Arr(lines)))
+            }
+            "session.resolve_line" => {
+                let s = sess!();
+                let Some(r) = p.get("ref").as_str().and_then(zenteru_term::lineref::LineRef::parse) else {
+                    return Some(Err(("bad_request", "ref must be ゼロ/0, -N, a 3-character code or a line UUID".into())));
+                };
+                let t = self.sessions[&s].s.term.lock().unwrap();
+                let hits = zenteru_term::lineref::resolve(&t, &r);
+                let matches: Vec<Json> = hits.iter().map(|&l| line_json(&t, l)).collect();
+                ok(Json::obj().with("ambiguous", matches.len() > 1).with("matches", Json::Arr(matches)))
             }
             "session.get_line_info" => {
                 let s = sess!();
@@ -2271,6 +2302,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("zenteru.smaller", "Smaller Text"),
     ("zenteru.reset_font", "Reset Text Size"),
     ("zenteru.focus_panel", "Focus Side Panel"),
+    ("zenteru.toggle_gutter", "Toggle Line Numbers (ゼロ / codes)"),
     ("zenteru.sudo_auth", "Set Up Touch ID / YubiKey for sudo…"),
 ];
 
@@ -2431,4 +2463,19 @@ mod selection_tests {
         let o = unit_range(&t, 0, 0, 1);
         assert!(extend_selection(o, o, 0).is_none());
     }
+}
+
+/// A line for the API: absolute index, relative index, code, UUIDv7 and text.
+fn line_json(t: &zenteru_term::term::Terminal, l: u64) -> Json {
+    use zenteru_term::lineref;
+    let row = t.line(l);
+    let id = row.map_or(0, |r| r.id);
+    Json::obj()
+        .with("line", l)
+        .with("rel", lineref::rel_of(t, l))
+        .with("rel_label", lineref::rel_label(lineref::rel_of(t, l)))
+        .with("code", (id != 0).then(|| lineref::code(id)))
+        .with("id", (id != 0).then(|| lineref::uuid_string(id)))
+        .with("landed_ms", (id != 0).then(|| lineref::landed_ms(id)))
+        .with("text", row.map(|r| r.text()).unwrap_or_default())
 }

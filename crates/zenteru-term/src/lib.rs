@@ -8,6 +8,7 @@ pub mod base64;
 pub mod cell;
 pub mod input;
 pub mod json;
+pub mod lineref;
 pub mod parser;
 pub mod pty;
 pub mod session;

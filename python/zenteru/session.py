@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .errors import RPCError
 from .prompt import Prompt
-from .screen import LineInfo, ScreenContents, Size
+from .screen import LineInfo, ScreenContents, Size, LineContents, line_from_dict
 from .variables import normalize_variable_name
 
 if TYPE_CHECKING:
@@ -141,6 +141,14 @@ class Session:
         return ScreenContents(
             await self._call("session.get_screen", first_line=first_line, count=number_of_lines) or {}
         )
+
+    async def async_resolve_line(self, ref: str) -> list[LineContents]:
+        """Lines matching a gutter reference: ``"ゼロ"``/``"0"`` (the cursor's
+        line), ``"-3"`` (three lines above it), a 3-character code like
+        ``"K7Q"`` or a line UUID. Codes can repeat in long scrollback; the
+        most recent line comes first."""
+        r = await self._call("session.resolve_line", ref=ref) or {}
+        return [line_from_dict(m) for m in r.get("matches", [])]
 
     async def async_get_line_info(self) -> LineInfo:
         r = await self._call("session.get_line_info") or {}

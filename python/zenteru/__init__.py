@@ -60,7 +60,7 @@ from .registration import (
     TitleRequest,
 )
 from .runner import run_forever, run_until_complete
-from .screen import LineContents, LineInfo, Point, ScreenContents, Size
+from .screen import LineContents, LineInfo, Point, ScreenContents, Size, line_code, rel_label
 from .session import Session, SessionEnv
 from .tab import Tab
 from .ui import Alert
@@ -70,6 +70,8 @@ from .window import Frame, Window
 __version__ = "0.1.0"
 
 __all__ = [
+    "line_code",
+    "rel_label",
     "Alert", "App", "AuthenticationError", "Command", "CommandInvocation", "Connection",
     "ConnectionClosed", "DropEvent", "DropHandler", "DropItem", "EachSessionOnceMonitor",
     "FocusMonitor", "FocusUpdate", "Frame", "Keystroke", "KeystrokeMonitor",

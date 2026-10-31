@@ -160,6 +160,7 @@ pub struct Terminal {
     links: Vec<String>,
     parser: Option<Parser>,
     last_char: Option<char>,
+    rng: u64,
     pub prompt: PromptState,
     /// OSC 4 / 10 / 11 / 12 overrides.
     pub palette: [Option<(u8, u8, u8)>; 256],
@@ -205,6 +206,7 @@ impl Terminal {
             links: Vec::new(),
             parser: Some(Parser::new()),
             last_char: None,
+            rng: crate::lineref::seed(),
             prompt: PromptState::default(),
             palette: [None; 256],
             fg_override: None,
@@ -422,6 +424,7 @@ impl Terminal {
 
     // ---- internals -------------------------------------------------------
 
+
     fn trim_scrollback(&mut self) {
         while self.scrollback.len() > self.scrollback_limit {
             self.scrollback.pop_front();
@@ -563,6 +566,10 @@ impl Terminal {
             self.grid()[y].cells[x + 1] = sp;
         }
         self.grid()[y].cells[x] = cell;
+        if self.grid()[y].id == 0 {
+            let id = crate::lineref::uuid7(&mut self.rng);
+            self.grid()[y].id = id;
+        }
         self.last_char = Some(c);
         if x + w >= cols {
             self.cursor.x = cols - 1;
@@ -1566,8 +1573,10 @@ fn hex_encode(s: &str) -> String {
 /// index). Returns the new lines and the cursor's new (x, line index).
 fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (usize, usize)) {
     // Gather logical lines.
-    let mut logical: Vec<(Vec<Cell>, bool)> = Vec::new(); // (cells, holds cursor)
+    let mut logical: Vec<(Vec<Cell>, bool, Vec<u128>, u128)> = Vec::new(); // (cells, holds cursor, per-cell stamps, first row's stamp)
     let mut cur: Vec<Cell> = Vec::new();
+    let mut cur_st: Vec<u128> = Vec::new();
+    let mut cur_first: Option<u128> = None;
     let mut cur_has = false;
     let mut cursor_off = 0usize;
     let mut cursor_line = 0usize;
@@ -1593,12 +1602,14 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
             cursor_off = cur.len() + cursor.0;
             cur_has = true;
         }
+        cur_st.extend(std::iter::repeat_n(row.id, cells.len()));
+        cur_first.get_or_insert(row.id);
         cur.extend(cells);
         if !row.wrapped {
             if cur_has {
                 cursor_line = logical.len();
             }
-            logical.push((std::mem::take(&mut cur), cur_has));
+            logical.push((std::mem::take(&mut cur), cur_has, std::mem::take(&mut cur_st), cur_first.take().unwrap_or(0)));
             cur_has = false;
         }
     }
@@ -1606,18 +1617,20 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
         if cur_has {
             cursor_line = logical.len();
         }
-        logical.push((cur, cur_has));
+        logical.push((cur, cur_has, cur_st, cur_first.unwrap_or(0)));
     }
     // Drop blank lines after the cursor's line.
-    while logical.len() > cursor_line + 1 && logical.last().is_some_and(|(c, _)| c.iter().all(Cell::is_blank)) {
+    while logical.len() > cursor_line + 1 && logical.last().is_some_and(|(c, ..)| c.iter().all(Cell::is_blank)) {
         logical.pop();
     }
 
     let mut out: Vec<Row> = Vec::new();
     let mut new_cursor = (0, 0);
-    for (cells, has) in logical {
+    for (cells, has, stamps, first_stamp) in logical {
         let first = out.len();
         let mut row: Vec<Cell> = Vec::with_capacity(cols);
+        // A rewrapped row lands when its first cell's source row did.
+        let mut row_stamp = first_stamp;
         let mut offsets: Vec<(usize, usize, usize)> = Vec::new(); // (logical idx, out row, col)
         for (i, c) in cells.into_iter().enumerate() {
             let w = if c.is_wide() { 2 } else { 1 };
@@ -1632,12 +1645,13 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
                     pad.flags = flags::SPACER;
                     row.push(pad);
                 }
-                out.push(Row { cells: std::mem::take(&mut row), wrapped: true });
+                out.push(Row { cells: std::mem::take(&mut row), wrapped: true, id: row_stamp });
+                row_stamp = stamps.get(i).copied().unwrap_or(0);
             }
             offsets.push((i, out.len(), row.len()));
             row.push(c);
         }
-        out.push(Row { cells: row, wrapped: false });
+        out.push(Row { cells: row, wrapped: false, id: row_stamp });
         if has {
             new_cursor = match offsets.iter().find(|(i, _, _)| *i == cursor_off) {
                 Some(&(_, r, c)) => (c, r),
@@ -1652,7 +1666,7 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
                         let more = x / cols;
                         for _ in 0..more {
                             out.last_mut().unwrap().wrapped = true;
-                            out.push(Row { cells: Vec::new(), wrapped: false });
+                            out.push(Row { cells: Vec::new(), wrapped: false, id: 0 });
                         }
                         (x % cols, out.len() - 1)
                     } else {
@@ -1663,7 +1677,7 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
         }
     }
     if out.is_empty() {
-        out.push(Row { cells: Vec::new(), wrapped: false });
+        out.push(Row { cells: Vec::new(), wrapped: false, id: 0 });
     }
     for r in &mut out {
         r.resize(cols);
@@ -1758,6 +1772,20 @@ mod tests {
         assert_eq!((t.cursor.x, t.cursor.y), (0, 1));
         t.resize(5, 3);
         assert_eq!(lines(&t), ["日本", "語で", "す"]);
+    }
+
+    #[test]
+    fn line_ids_survive_reflow() {
+        let mut t = term(10, 4, "abcdefghijklmno\r\nxy\r\n$ ");
+        let before: Vec<u128> = (0..4).map(|l| t.line(l).unwrap().id).collect();
+        assert!(t.screen()[0].wrapped);
+        t.resize(20, 4);
+        // The wrapped pair joins into one row that keeps the first row's id.
+        assert_eq!(t.screen()[0].id, before[0]);
+        assert_eq!(t.screen()[1].id, before[2]);
+        t.resize(5, 6);
+        assert_eq!(t.screen()[0].id, before[0]);
+        assert_ne!(t.screen()[1].id, 0);
     }
 
     #[test]

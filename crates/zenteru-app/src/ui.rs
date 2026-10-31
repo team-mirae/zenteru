@@ -260,6 +260,36 @@ pub fn draw(app: &mut App, wid: &str) {
             if bg_default != pal::BG {
                 f.rect(0.0, l.tabbar_h, l.panel_x, l.h - l.tabbar_h, c(bg_default));
             }
+            // Shell-mode gutter: relative index (ゼロ, -1, -2 … upward from the
+            // cursor's line) and the line's 3-character code.
+            if l.gutter_w > 0.0 && !t.alt_screen() {
+                let anchor = zenteru_term::lineref::anchor(&t);
+                let gx = l.gutter_x;
+                f.gradient_rect(l.term_x - cw * 0.5, l.term_y, 1.0 * s, (l.rows as f32) * ch, 0.0, rgba(pal::GRADIENT_FROM, 0.35), rgba(pal::GRADIENT_TO, 0.35));
+                for y in 0..l.rows.min(t.rows) {
+                    let abs = t.view_abs(y);
+                    if abs > anchor {
+                        break;
+                    }
+                    let Some(row) = t.view_row(y) else { continue };
+                    let rel = abs as i64 - anchor as i64;
+                    let py = l.term_y + y as f32 * ch;
+                    let label = zenteru_term::lineref::rel_label(rel);
+                    let lw = str_width(&label);
+                    let lx = gx + (6usize.saturating_sub(lw)) as f32 * cw;
+                    if rel == 0 {
+                        let g = Grad { x0: lx, x1: lx + lw as f32 * cw, to: grad_to() };
+                        renderer.text(&mut f, &label, lx, py, c(pal::GRADIENT_FROM), Style::Bold, lw, Some(g), scale);
+                    } else {
+                        renderer.text(&mut f, &label, lx, py, c(pal::MUTED), Style::Regular, lw, None, scale);
+                    }
+                    if row.id != 0 {
+                        let code = zenteru_term::lineref::code(row.id);
+                        let color = if rel == 0 { rgba(pal::LABEL, 0.9) } else { rgba(pal::LABEL, 0.45) };
+                        renderer.text(&mut f, &code, gx + 7.0 * cw, py, color, Style::Regular, 3, None, scale);
+                    }
+                }
+            }
             let sel = sess.selection.as_ref().map(|s| s.ordered());
             let reverse = t.modes.reverse_video;
             let rows = l.rows.min(t.rows);

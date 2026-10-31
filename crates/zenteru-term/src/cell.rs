@@ -101,11 +101,14 @@ pub struct Row {
     pub cells: Vec<Cell>,
     /// The line continues on the next row (soft wrap).
     pub wrapped: bool,
+    /// UUIDv7 minted when the row first got content: the landing time in
+    /// Unix milliseconds plus random salt (0 = never written). See `lineref`.
+    pub id: u128,
 }
 
 impl Row {
     pub fn new(cols: usize, a: &Attrs) -> Self {
-        Self { cells: vec![Cell::blank(a); cols], wrapped: false }
+        Self { cells: vec![Cell::blank(a); cols], wrapped: false, id: 0 }
     }
 
     /// Text of the row with zenkaku spacers skipped. Trailing blanks trimmed.

@@ -28,6 +28,15 @@ class LineContents:
 
     string: str
     hard_eol: bool = True
+    #: Relative index: 0 (ゼロ) is the cursor's line, -1 the line above, ...
+    rel: Optional[int] = None
+    #: 3-character line code shown in the gutter (None if the line is blank).
+    code: Optional[str] = None
+    #: The line's UUIDv7 (its landing time is ``landed_ms``).
+    id: Optional[str] = None
+    landed_ms: Optional[int] = None
+    #: Absolute line index (0 = oldest scrollback line).
+    line: Optional[int] = None
 
     def __str__(self) -> str:
         return self.string
@@ -49,8 +58,7 @@ class ScreenContents:
         cursor = data.get("cursor") or {}
         self.cursor_coord = Point(int(cursor.get("x", 0)), int(cursor.get("y", 0)))
         self.lines: list[LineContents] = [
-            LineContents(str(line.get("text", "")), bool(line.get("hard_eol", True)))
-            for line in data.get("lines", [])
+            line_from_dict(line) for line in data.get("lines", [])
         ]
 
     @property
@@ -106,6 +114,35 @@ class LineInfo:
     @property
     def scrollback_buffer_height(self) -> int:  # iTerm2 name
         return self.scrollback_lines
+
+
+def line_from_dict(line: dict[str, Any]) -> LineContents:
+    return LineContents(
+        str(line.get("text", "")),
+        bool(line.get("hard_eol", True)),
+        line.get("rel"),
+        line.get("code"),
+        line.get("id"),
+        line.get("landed_ms"),
+        line.get("line"),
+    )
+
+
+def line_code(line_id: str) -> str:
+    """The 3-character gutter code of a line UUID (same algorithm as zenteru:
+    FNV-1a 64 over the UUID's 16 bytes, mod 36**3, base 36, uppercase)."""
+    h = 0xCBF29CE484222325
+    for b in bytes.fromhex(line_id.replace("-", "")):
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    n = h % 46656
+    digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return digits[n // 1296] + digits[n // 36 % 36] + digits[n % 36]
+
+
+def rel_label(rel: int) -> str:
+    """Gutter label: ゼロ for 0, -1, -2, ... above it."""
+    return "ゼロ" if rel == 0 else (str(rel) if rel < 0 else f"+{rel}")
 
 
 def screen_from_result(result: Optional[dict]) -> ScreenContents:

@@ -79,6 +79,7 @@ Session = {session_id, title, cols, rows, pid, cwd|null, tty, alt_screen: bool,
 | `session.send_text` | `{session_id, text, as_user?: bool=false}` | `{}` — bytes to the pty as if typed. `as_user:false` (default for plugins) marks the next command as *not* user-sent, so setenvvar variables are not applied to it. |
 | `session.inject` | `{session_id, data}` | `{}` — as if the program printed `data` |
 | `session.get_screen` | `{session_id, first_line?, count?}` | `ScreenContents` |
+| `session.resolve_line` | `{session_id, ref}` | `{ambiguous, matches: [Line]}` — `ref` is `ゼロ`/`0`, `-N`, a 3-character code (O/0 and I/1 look-alikes tolerated) or a line UUID; most recent first |
 | `session.get_line_info` | `{session_id}` | `{scrollback_lines, rows, cols, first_visible_line}` |
 | `session.get_prompt` | `{session_id}` | `Prompt` (needs shell integration, else `{state:"unknown"}`) |
 | `session.get_selection` | `{session_id}` | `{text}` |
@@ -92,7 +93,8 @@ Session = {session_id, title, cols, rows, pid, cwd|null, tty, alt_screen: bool,
 
 ```
 ScreenContents = {cols, rows, cursor: {x, y}, first_line, alt_screen,
-                  lines: [{text, hard_eol: bool, password: bool}]}
+                  lines: [Line & {hard_eol: bool, password: bool}]}
+Line = {line, rel, rel_label, code|null, id|null, landed_ms|null, text}
 ```
 `password` marks the line holding a password prompt that is currently
 being answered (echo off): plugins must not send its text anywhere.
@@ -104,6 +106,16 @@ screen is returned. Wide (zenkaku) characters appear once in `text`.
 Prompt = {state: "editing"|"running"|"finished"|"unknown",
           command|null, cwd|null, exit_status|null, prompt_line|null}
 ```
+
+### Line references (the shell-mode gutter)
+In shell mode (not in the alternate screen) zenteru shows a gutter:
+* `rel` — relative index: `ゼロ` (0) is the cursor's line, then -1, -2, …
+  upward, into scrollback.
+* `code` — 3 characters `[0-9A-Z]` from the line's `id`, a UUIDv7 minted
+  when the line first got content (48-bit Unix ms landing time + random
+  salt; times are never adjusted). `code = base36(FNV-1a64(uuid bytes, big
+  endian) mod 36^3)`, zero-padded, uppercase — `zenteru.line_code(id)` in
+  Python. Codes can repeat across a long scrollback; `rel` never does.
 
 ### setenvvar store
 Each session has a private env store. Its file lives at

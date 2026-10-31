@@ -1054,6 +1054,13 @@ pub fn run() {
     APP.with(|a| *a.borrow_mut() = Some(App::new()));
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // Unbundled (`cargo run`): show the logo in the Dock anyway.
+    if crate::platform::app_bundle().is_none() {
+        let icns = crate::platform::resources_dir().join("resources/zenteru.icns");
+        if let Some(img) = objc2_app_kit::NSImage::initWithContentsOfFile(objc2_app_kit::NSImage::alloc(), &NSString::from_str(&icns.to_string_lossy())) {
+            unsafe { app.setApplicationIconImage(Some(&img)) };
+        }
+    }
     let delegate: Retained<AppDelegate> = unsafe { msg_send![AppDelegate::alloc(mtm), init] };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));

@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="160" alt="zenteru logo: ゼ on the zencode gradient"></p>
+
 # zenteru · 젠테루 · ゼンテール
 
 A macOS terminal with first-class 全角 (zenkaku / full-width) support,

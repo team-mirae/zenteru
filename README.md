@@ -7,6 +7,11 @@ rendered with Metal, with Chrome-style tabs and an iTerm2-style Python
 plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
 テル, the Japanese reading of "terminal".
 
+> [!NOTE]
+> zenteru is a dogfooded, rolling, bleeding-edge release: we use it every
+> day and ship straight from `main`. Things will break, so keep
+> [iTerm2](https://iterm2.com) (or Terminal.app) installed just in case.
+
 - **Zenkaku from day one.** 한글, 日本語 and other wide characters take
   two cells everywhere: in the grid, the cursor, reflow on resize,
   selection, IME preedit and every piece of UI chrome. 全角スペース is

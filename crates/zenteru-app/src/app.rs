@@ -170,6 +170,11 @@ pub struct Sess {
     pub pwd: PasswordUi,
     /// The prompt asks for a secret but the tty echoes: warn.
     pub echo_warning: bool,
+    /// A raw-mode secret prompt (gh, inquirer, npm…): echo off without
+    /// canonical mode, detected from the prompt text; sticky until Enter.
+    pub raw_pw: bool,
+    /// Absolute line of the raw secret prompt; leaving it ends the field.
+    pub raw_pw_line: u64,
     /// The command line contains a remembered password.
     pub secret_in_line: bool,
     pub confirm_enter: bool,
@@ -392,6 +397,8 @@ impl App {
                 title: String::new(),
                 pwd: PasswordUi::default(),
                 echo_warning: false,
+                raw_pw: false,
+                raw_pw_line: 0,
                 secret_in_line: false,
                 confirm_enter: false,
                 selection: None,
@@ -620,7 +627,7 @@ impl App {
                 (ev, t.prompt.phase, t.prompt.command.clone(), t.prompt.exit_status, t.prompt.cwd.clone())
             };
             // Password mode: echo off + canonical input.
-            let pw = s.s.password_mode();
+            let pw = s.s.password_mode() || s.raw_pw;
             if pw != s.pwd.active {
                 if !pw {
                     s.pwd.wipe();
@@ -649,7 +656,22 @@ impl App {
                     });
                     (row.unwrap_or_default(), t.edit_line().0)
                 };
-                s.echo_warning = !pw && prompt_asks_for_secret(&line_before_cursor) && s.s.echo_on();
+                let echo = s.s.echo_on();
+                let (alt, cur_line, editing) = {
+                    let t = s.s.term.lock().unwrap();
+                    (t.alt_screen(), t.cursor_abs().0, t.prompt.phase == PromptPhase::Editing)
+                };
+                if echo || alt || (s.raw_pw && (cur_line != s.raw_pw_line || (editing && s.last_phase != PromptPhase::Editing))) {
+                    s.raw_pw = false;
+                } else if !s.raw_pw && prompt_asks_for_secret(&line_before_cursor) {
+                    s.raw_pw_line = cur_line;
+                    // Echo off, not canonical (else password_mode() caught it):
+                    // a TUI prompt asking for a secret. It draws its own
+                    // asterisks, so detection happens before typing starts.
+                    s.raw_pw = true;
+                    s.s.dirty.store(true, Ordering::Release);
+                }
+                s.echo_warning = !pw && prompt_asks_for_secret(&line_before_cursor) && echo;
                 let matched = !pw && self.secrets.matches(&edit);
                 if !matched {
                     s.confirm_enter = false;
@@ -881,6 +903,7 @@ impl App {
                             self.secrets.remember(&secret);
                             let s = self.sessions.get_mut(&sid).unwrap();
                             s.pwd.wipe();
+                            s.raw_pw = false;
                         }
                         Key::Text(ref t) if mods.ctrl && (t == "u" || t == "c") => s.pwd.wipe(),
                         _ => {}

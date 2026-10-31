@@ -183,7 +183,9 @@ decides what to show. `panel.update` with `actions: []` removes buttons.
 
 ### Password safety (core behaviour)
 * **Password fields** (tty echo off + canonical mode: sudo, ssh, `read -s`,
-  getpass) are drawn as a zencode-gradient frame with one ● per key typed.
+  getpass; or echo off in raw mode with a prompt asking for a secret, as
+  gh, npm and inquirer-style TUIs do — until the cursor leaves that line)
+  are drawn as a zencode-gradient frame with one ● per key typed.
   Keystroke events are not delivered and `session.send_text` from plugins
   is refused while it is active.
 * What you type there is remembered only as salted 64-bit fingerprints, in

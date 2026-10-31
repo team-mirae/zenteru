@@ -172,6 +172,9 @@ pub struct Terminal {
     pub user_vars: Vec<(String, String)>,
     /// Bumped on every change that affects rendering.
     pub generation: u64,
+    /// Absolute line where the screen started after the last `clear`
+    /// (ED 2 / ED 3). Resizing never pulls lines above it back on screen.
+    pub screen_floor: Option<u64>,
 }
 
 const DEFAULT_SCROLLBACK: usize = 10_000;
@@ -215,6 +218,7 @@ impl Terminal {
             cell_px: (8, 16),
             user_vars: Vec::new(),
             generation: 0,
+            screen_floor: None,
         }
     }
 
@@ -372,10 +376,16 @@ impl Terminal {
         let mut lines: Vec<Row> = self.scrollback.drain(..).collect();
         let sb_len = lines.len();
         lines.append(&mut self.primary);
-        let (mut new_lines, (nx, ny)) = reflow(lines, (pcx, sb_len + pcy), cols);
+        let dropped_before = self.dropped;
+        let floor_row = self.screen_floor.and_then(|f| f.checked_sub(dropped_before)).map(|f| f as usize).filter(|&f| f <= sb_len + pcy);
+        let (mut new_lines, (nx, ny), new_floor) = reflow(lines, (pcx, sb_len + pcy), cols, floor_row);
         // Split into scrollback + screen with the cursor on screen.
         let total = new_lines.len();
         let mut start = total.saturating_sub(rows);
+        // Don't pull lines from before a `clear` back onto the screen.
+        if let Some(fl) = new_floor {
+            start = start.max(fl);
+        }
         if ny < start {
             start = ny;
         }
@@ -389,6 +399,7 @@ impl Terminal {
         for r in &mut self.primary {
             r.resize(cols);
         }
+        self.screen_floor = new_floor.map(|fl| dropped_before + fl as u64).filter(|_| floor_row.is_some());
         let new_cursor = (nx.min(cols - 1), ny - start);
         if self.alt_active {
             self.saved[0].cursor.x = new_cursor.0;
@@ -655,11 +666,18 @@ impl Terminal {
                 if !self.alt_active {
                     let used = self.primary.iter().rposition(|r| r.used() > 0);
                     if let Some(last) = used {
-                        for r in self.primary[..=last].to_vec() {
+                        let mut rows = self.primary[..=last].to_vec();
+                        // What was on screen ends here: don't let reflow join
+                        // it to whatever is printed after the clear.
+                        if let Some(r) = rows.last_mut() {
+                            r.wrapped = false;
+                        }
+                        for r in rows {
                             self.scrollback.push_back(r);
                         }
                         self.trim_scrollback();
                     }
+                    self.screen_floor = Some(self.screen_base());
                 }
                 for r in 0..self.rows {
                     let b = self.blank_row();
@@ -669,6 +687,9 @@ impl Terminal {
             3 => {
                 self.dropped += self.scrollback.len() as u64;
                 self.scrollback.clear();
+                if !self.alt_active {
+                    self.screen_floor = Some(self.screen_base());
+                }
                 self.display_offset = 0;
                 self.prompt.marks.clear();
             }
@@ -1571,7 +1592,9 @@ fn hex_encode(s: &str) -> String {
 
 /// Rewrap `lines` (scrollback + screen) to `cols`. `cursor` is (x, line
 /// index). Returns the new lines and the cursor's new (x, line index).
-fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (usize, usize)) {
+/// `floor` is a row index whose logical line must stay at or below the top
+/// of the screen; its new row index is returned alongside.
+fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize, floor: Option<usize>) -> (Vec<Row>, (usize, usize), Option<usize>) {
     // Gather logical lines.
     let mut logical: Vec<(Vec<Cell>, bool, Vec<u128>, u128)> = Vec::new(); // (cells, holds cursor, per-cell stamps, first row's stamp)
     let mut cur: Vec<Cell> = Vec::new();
@@ -1580,8 +1603,12 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
     let mut cur_has = false;
     let mut cursor_off = 0usize;
     let mut cursor_line = 0usize;
+    let mut floor_logical: Option<usize> = None;
     for (i, row) in lines.into_iter().enumerate() {
         let is_cursor_row = i == cursor.1;
+        if Some(i) == floor {
+            floor_logical = Some(logical.len());
+        }
         let mut cells = row.cells;
         // Drop a wrap padding spacer (a spacer not preceded by a wide cell).
         if row.wrapped {
@@ -1626,8 +1653,12 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
 
     let mut out: Vec<Row> = Vec::new();
     let mut new_cursor = (0, 0);
-    for (cells, has, stamps, first_stamp) in logical {
+    let mut new_floor = None;
+    for (li, (cells, has, stamps, first_stamp)) in logical.into_iter().enumerate() {
         let first = out.len();
+        if Some(li) == floor_logical {
+            new_floor = Some(first);
+        }
         let mut row: Vec<Cell> = Vec::with_capacity(cols);
         // A rewrapped row lands when its first cell's source row did.
         let mut row_stamp = first_stamp;
@@ -1682,7 +1713,7 @@ fn reflow(lines: Vec<Row>, cursor: (usize, usize), cols: usize) -> (Vec<Row>, (u
     for r in &mut out {
         r.resize(cols);
     }
-    (out, new_cursor)
+    (out, new_cursor, new_floor)
 }
 
 #[cfg(test)]
@@ -1772,6 +1803,36 @@ mod tests {
         assert_eq!((t.cursor.x, t.cursor.y), (0, 1));
         t.resize(5, 3);
         assert_eq!(lines(&t), ["日本", "語で", "す"]);
+    }
+
+    #[test]
+    fn resize_does_not_undo_clear() {
+        let mut t = term(10, 4, "one\r\ntwo\r\nthree\r\nfour");
+        // `clear` (ncurses sends E3 too): home, erase display, erase scrollback.
+        t.feed(b"\x1b[H\x1b[2J\x1b[3J$ ");
+        assert_eq!(lines(&t)[0], "$");
+        t.resize(10, 8);
+        assert_eq!(lines(&t)[0], "$", "taller: nothing pulled back");
+        t.resize(5, 8);
+        t.resize(20, 3);
+        assert_eq!(lines(&t)[0], "$");
+        // The exact bytes macOS `clear` sends: E3 first, then home + ED 2.
+        let mut t = term(10, 4, "one\r\ntwo\r\nthree\r\nfour");
+        t.feed(b"\x1b[3J\x1b[H\x1b[2J$ ");
+        t.resize(12, 9);
+        assert_eq!(lines(&t)[0], "$");
+        // Without E3 the old screen stays in scrollback, still off screen.
+        let mut t = term(10, 4, "one\r\ntwo\r\nthree\r\nfour");
+        t.feed(b"\x1b[H\x1b[2J$ ");
+        t.resize(10, 8);
+        assert_eq!(lines(&t)[0], "$");
+        assert!(t.scrollback.iter().any(|r| r.text() == "four"));
+        // New output after the clear scrolls normally and can come back.
+        t.feed(b"\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8");
+        t.resize(10, 4);
+        t.resize(10, 6);
+        assert_eq!(lines(&t)[5], "8");
+        assert_eq!(lines(&t)[0], "3", "lines after the clear may be pulled back");
     }
 
     #[test]

@@ -52,7 +52,9 @@ jobs:
           lipo -info target/universal/zenteru
 
       - name: Import signing certificate
+        id: cert
         if: env.HAS_CERT == 'true'
+        continue-on-error: true
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -75,6 +77,9 @@ jobs:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
           if [ -z "$MACOS_CERT_P12" ]; then
+            export ZENTERU_SIGN_IDENTITY=-
+          elif [ "${{ steps.cert.outcome }}" != "success" ]; then
+            echo "::warning title=Signed ad hoc::The signing certificate could not be imported (wrong MACOS_CERT_PASSWORD?); this release is signed ad hoc."
             export ZENTERU_SIGN_IDENTITY=-
           elif [ -n "$MACOS_SIGN_IDENTITY" ]; then
             export ZENTERU_SIGN_IDENTITY="$MACOS_SIGN_IDENTITY"

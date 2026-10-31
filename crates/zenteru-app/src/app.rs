@@ -21,6 +21,7 @@ use crate::view::WinHandle;
 pub const TAB_BAR_PT: f64 = 38.0;
 pub const PAD_PT: f64 = 6.0;
 pub const PANEL_PT: f64 = 400.0;
+pub const PANEL_MIN_PT: f64 = 240.0;
 pub const TRAFFIC_LIGHTS_PT: f64 = 78.0;
 /// Gutter: relative index (6 cells, fits ゼロ and -99999), a space, the
 /// 3-character line code, a space.
@@ -80,6 +81,8 @@ pub struct Hits {
     pub modes: Vec<(String, String, [f32; 4])>,
     pub panel_input: [f32; 4],
     pub panel_close: [f32; 4],
+    /// The panel's draggable left edge.
+    pub panel_edge: [f32; 4],
     /// Laid-out input lines (first char, text), the first one shown, and the
     /// text origin — to map clicks to char indices.
     pub panel_lines: Vec<(usize, String)>,
@@ -124,6 +127,10 @@ pub struct Win {
     pub panel_drag: bool,
     /// A short message in the corner (text, is_error, since).
     pub toast: Option<(String, bool, Instant)>,
+    /// Dragging the panel's edge: (pointer x at press in px, width pt at press).
+    pub panel_resize: Option<(f32, f64)>,
+    /// The pointer is over the panel's edge (resize cursor shown).
+    pub edge_hover: bool,
 }
 
 impl Win {
@@ -225,12 +232,14 @@ pub struct Sess {
     pub sel_origin: Option<(Pos, Pos, u8)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PanelMsg {
     pub id: u64,
     pub role: String,
     pub text: String,
     pub actions: Vec<(String, String)>,
+    /// Rich content (images, styled text, code, progress…), after `text`.
+    pub blocks: Vec<crate::blocks::Block>,
 }
 
 pub struct Panel {
@@ -301,6 +310,8 @@ pub struct App {
     last_gutter_event: (u32, u32, bool, &'static str),
     /// Show the ゼ splash in the first session at launch.
     splash_pending: bool,
+    /// Side-panel width in points (dragging its edge changes it; saved).
+    pub panel_width_pt: f64,
     /// Results of background jobs (music commands): (window, result).
     jobs_tx: std::sync::mpsc::Sender<(String, Result<String, String>)>,
     jobs_rx: std::sync::mpsc::Receiver<(String, Result<String, String>)>,
@@ -361,6 +372,7 @@ impl App {
             last_gutter_event: (0, 0, false, ""),
             jobs_tx: jobs.0,
             jobs_rx: jobs.1,
+            panel_width_pt: crate::settings::load().get("panel_width").as_f64().unwrap_or(PANEL_PT).max(PANEL_MIN_PT),
             splash_pending: std::env::var("ZENTERU_SPLASH").map_or_else(
                 |_| crate::settings::load().get("splash").as_bool().unwrap_or(true),
                 |v| v != "0",
@@ -416,6 +428,8 @@ impl App {
             rain_shown: false,
             panel_drag: false,
             toast: None,
+            panel_resize: None,
+            edge_hover: false,
         };
         self.windows.push(win);
         self.relayout(&wid);
@@ -585,6 +599,8 @@ impl App {
                     rain_shown: false,
                     panel_drag: false,
                     toast: None,
+                    panel_resize: None,
+                    edge_hover: false,
                 });
                 wid
             }
@@ -626,7 +642,7 @@ impl App {
         let h = hpt as f32 * s;
         let tabbar_h = (TAB_BAR_PT as f32 * s).round();
         let pad = (PAD_PT as f32 * s).round();
-        let panel_w = if panel_visible { (PANEL_PT as f32 * s).min(w * 0.5).round() } else { 0.0 };
+        let panel_w = if panel_visible { (self.panel_width_pt as f32 * s).clamp(PANEL_MIN_PT as f32 * s, (w * 0.75).max(PANEL_MIN_PT as f32 * s)).round() } else { 0.0 };
         let gutter_w = if self.gutter { GUTTER_CELLS as f32 * cw } else { 0.0 };
         let cols = (((w - panel_w - 2.0 * pad - gutter_w) / cw).floor() as usize).max(10);
         let rows = (((h - tabbar_h - 2.0 * pad) / ch).floor() as usize).max(3);
@@ -1100,6 +1116,16 @@ impl App {
             }
         }
         self.with_term(&sid, |t| t.feed(art.as_bytes()));
+    }
+
+    /// Set the side-panel width (points) for every window, and save it.
+    pub fn set_panel_width(&mut self, pt: f64) {
+        self.panel_width_pt = pt.max(PANEL_MIN_PT).min(4000.0);
+        crate::settings::set("panel_width", self.panel_width_pt);
+        let ids: Vec<String> = self.windows.iter().map(|w| w.id.clone()).collect();
+        for id in ids {
+            self.relayout(&id);
+        }
     }
 
     /// A short message in the window's corner (red when `error`).
@@ -2425,6 +2451,10 @@ impl App {
                             Json::obj()
                         }
                         "panel.append" => {
+                            let blocks = match crate::blocks::parse(p.get("blocks")) {
+                                Ok(b) => b,
+                                Err(e) => return Some(Err(("bad_request", e))),
+                            };
                             let mid = pan.next_msg;
                             pan.next_msg += 1;
                             pan.messages.push(PanelMsg {
@@ -2432,6 +2462,7 @@ impl App {
                                 role: p.get("role").as_str().unwrap_or("assistant").to_string(),
                                 text: p.get("text").as_str().unwrap_or("").to_string(),
                                 actions: parse_actions(p.get("actions")),
+                                blocks,
                             });
                             if pan.messages.len() > 2000 {
                                 pan.messages.remove(0);
@@ -2441,9 +2472,20 @@ impl App {
                         }
                         "panel.update" => {
                             let mid = p.get("message_id").as_i64().unwrap_or(-1) as u64;
+                            let blocks = if p.get("blocks").is_null() {
+                                None
+                            } else {
+                                match crate::blocks::parse(p.get("blocks")) {
+                                    Ok(b) => Some(b),
+                                    Err(e) => return Some(Err(("bad_request", e))),
+                                }
+                            };
                             if let Some(msg) = pan.messages.iter_mut().find(|x| x.id == mid) {
                                 if let Some(t) = p.get("text").as_str() {
                                     msg.text = t.to_string();
+                                }
+                                if let Some(b) = blocks {
+                                    msg.blocks = b;
                                 }
                                 if !p.get("actions").is_null() {
                                     msg.actions = parse_actions(p.get("actions"));
@@ -2470,6 +2512,7 @@ impl App {
                             pan.input_secret = p.get("secret").as_bool().unwrap_or(false);
                             Json::obj()
                         }
+                        "panel.set_width" => Json::obj(),
                         "panel.destroy" => Json::obj(),
                         _ => return Some(Err(("unsupported", format!("unknown method {m}")))),
                     }
@@ -2477,6 +2520,15 @@ impl App {
                 if m == "panel.destroy" {
                     self.destroy_panel(&pid);
                     return ok(result);
+                }
+                if m == "panel.set_width" {
+                    match p.get("width").as_f64() {
+                        Some(w) if w > 0.0 => {
+                            self.set_panel_width(w);
+                            return ok(Json::obj().with("width", self.panel_width_pt));
+                        }
+                        _ => return Some(Err(("bad_request", "width (points) required".into()))),
+                    }
                 }
                 if matches!(m, "panel.show" | "panel.hide" | "panel.toggle") {
                     let visible = self.panels[&pid].visible;
@@ -2555,6 +2607,9 @@ impl App {
                 let pal = w.and_then(|w| w.palette.as_ref());
                 let panel = w.and_then(|w| w.panel.clone()).and_then(|id| self.panels.get(&id));
                 ok(Json::obj()
+                    .with("panel_w", w.map(|w| w.layout.panel_w))
+                    .with("window_panel", w.and_then(|w| w.panel.clone()))
+                    .with("panel_visible", w.and_then(|w| w.panel.clone()).and_then(|id| self.panels.get(&id)).map(|p| p.visible))
                     .with("toast", w.and_then(|w| w.toast.as_ref()).map(|t| format!("{}{}", if t.1 { "ERROR " } else { "" }, t.0)))
                     .with("panel_input", panel.map(|p| p.input.clone()))
                     .with("panel_selection", panel.and_then(|p| p.selected_text()))

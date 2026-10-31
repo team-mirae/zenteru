@@ -3,6 +3,7 @@
 
 mod app;
 mod font;
+mod blocks;
 mod gutter;
 mod settings;
 mod splash;

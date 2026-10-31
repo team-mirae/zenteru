@@ -176,3 +176,26 @@ It can also be a coroutine function. The driver switches the style to
 `custom` while it runs, only renders while the rain is showing, and puts the
 previous style back on `stop()`. Other helpers: `async_get_gutter_size`,
 `async_set_gutter_style`, `encode_matrix`.
+
+
+## Rich panel content
+
+Panels show more than text. Pass `blocks` to `async_append` / `async_update`:
+
+```python
+from zenteru import blocks as B
+
+mid = await panel.async_append("system", blocks=[
+    B.Text("cat.png", bold=True, color="gradient"),
+    B.Image.from_path("/Users/me/cat.png", max_width=40, alt="a cat"),
+    B.Text("1280×960 · 412 KB", color="muted"),
+    B.Divider(),
+    B.Code("print('hello')"),
+    B.Progress(0.42, "uploading"),
+])
+await panel.async_update(mid, blocks=[...])     # replace in place (previews)
+await panel.async_set_width(520)                 # points; users can drag the edge too
+```
+
+`B.Image.from_bytes(data)` sends image bytes inline instead of a path.
+Colors: `"#rrggbb"`, `"gradient"` (zencode) or `"muted"`.

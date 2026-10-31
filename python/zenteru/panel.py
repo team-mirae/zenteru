@@ -152,29 +152,49 @@ class Panel:
         await self._call("panel.toggle")
 
     async def async_append(
-        self, role: str, text: str, actions: Optional[Iterable[Union[dict, tuple[str, str]]]] = None
+        self,
+        role: str,
+        text: str = "",
+        actions: Optional[Iterable[Union[dict, tuple[str, str]]]] = None,
+        blocks: Optional[list] = None,
     ) -> Any:
         """Add a message; returns its ``message_id``.
 
         ``actions`` are buttons: ``[{"id": "ok", "label": "OK"}]`` or
         ``[("ok", "OK")]``. Clicking one produces an ``action`` event.
+        ``blocks`` adds rich content after the text: images, styled text,
+        code, progress bars, dividers (see :mod:`zenteru.blocks`).
         """
         params: dict[str, Any] = {"role": role, "text": text}
         if actions is not None:
             params["actions"] = _actions(actions)
+        if blocks is not None:
+            params["blocks"] = list(blocks)
         r = await self._call("panel.append", **params)
         return (r or {}).get("message_id")
 
     async def async_update(
-        self, message_id: Any, text: Optional[str] = None, actions: Optional[Iterable[Any]] = None
+        self,
+        message_id: Any,
+        text: Optional[str] = None,
+        actions: Optional[Iterable[Any]] = None,
+        blocks: Optional[list] = None,
     ) -> None:
-        """Replace a message's text and/or actions (for streaming output)."""
+        """Replace a message's text, actions and/or blocks (for streaming
+        output or in-place previews)."""
         params: dict[str, Any] = {"message_id": message_id}
         if text is not None:
             params["text"] = text
         if actions is not None:
             params["actions"] = _actions(actions)
+        if blocks is not None:
+            params["blocks"] = list(blocks)
         await self._call("panel.update", **params)
+
+    async def async_set_width(self, width: float) -> float:
+        """Set the side-panel width in points (shared by all panels; saved)."""
+        r = await self._call("panel.set_width", width=float(width))
+        return float((r or {}).get("width", width))
 
     async def async_clear(self) -> None:
         await self._call("panel.clear")

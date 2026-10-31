@@ -682,6 +682,40 @@ fn mouse(a: &mut App, wid: &str, x: f32, y: f32, btn: MouseButton, action: Mouse
         return;
     }
 
+    // Resizing the side panel by its left edge.
+    if let Some((x0, w0)) = a.windows[wi].panel_resize {
+        match action {
+            MouseAction::Motion => {
+                let w = w0 + ((x0 - x) / s) as f64;
+                a.panel_width_pt = w.max(crate::app::PANEL_MIN_PT);
+                a.relayout(wid);
+            }
+            MouseAction::Release => {
+                a.windows[wi].panel_resize = None;
+                let w = a.panel_width_pt;
+                a.set_panel_width(w);
+            }
+            MouseAction::Press => {}
+        }
+        return;
+    }
+    if l.panel_w > 0.0 && btn == MouseButton::Left && action == MouseAction::Press && inside(a.windows[wi].hits.panel_edge, x, y) {
+        a.windows[wi].panel_resize = Some((x, a.panel_width_pt));
+        a.windows[wi].dirty = true;
+        return;
+    }
+    if btn == MouseButton::None && action == MouseAction::Motion {
+        let over = l.panel_w > 0.0 && inside(a.windows[wi].hits.panel_edge, x, y);
+        if over != a.windows[wi].edge_hover {
+            a.windows[wi].edge_hover = over;
+            a.windows[wi].dirty = true;
+            if over {
+                objc2_app_kit::NSCursor::resizeLeftRightCursor().set();
+            } else {
+                objc2_app_kit::NSCursor::arrowCursor().set();
+            }
+        }
+    }
     // A selection drag that started in the panel input keeps going even if
     // the pointer leaves the box.
     if a.windows[wi].panel_drag && btn == MouseButton::Left {

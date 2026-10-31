@@ -210,6 +210,8 @@ pub struct Renderer {
     shelf_y: u32,
     shelf_h: u32,
     glyphs: HashMap<(String, Style, u32, u32), Option<GlyphEntry>>,
+    /// Panel images scaled to a size: (image key, w px, h px).
+    images: HashMap<(u64, u32, u32), Option<GlyphEntry>>,
     fonts: HashMap<u32, Fonts>,
     pub font_size: f64,
 }
@@ -245,6 +247,7 @@ impl Renderer {
             shelf_y: 0,
             shelf_h: 0,
             glyphs: HashMap::new(),
+            images: HashMap::new(),
             fonts: HashMap::new(),
             font_size,
         }
@@ -335,6 +338,7 @@ impl Renderer {
         }
         if self.shelf_y + h > self.atlas_size {
             self.glyphs.clear();
+            self.images.clear();
             self.shelf_x = 0;
             self.shelf_y = 0;
             self.shelf_h = 0;
@@ -362,6 +366,40 @@ impl Renderer {
             kind: if g.color { 2 } else { 1 },
             ..Default::default()
         });
+    }
+
+    /// Draw an image scaled to `w` × `h` pixels at (x, y), from the atlas.
+    pub fn push_image(&mut self, f: &mut Frame, key: u64, img: &objc2_core_graphics::CGImage, x: f32, y: f32, w: u32, h: u32) {
+        use objc2_core_graphics::{CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGInterpolationQuality};
+        if w == 0 || h == 0 || w > self.atlas_size / 2 || h > self.atlas_size / 2 {
+            return;
+        }
+        let ck = (key, w, h);
+        let entry = match self.images.get(&ck) {
+            Some(e) => *e,
+            None => {
+                let mut data = vec![0u8; (w * h * 4) as usize];
+                let space = objc2_core_graphics::CGColorSpace::new_device_rgb();
+                let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+                let ctx = unsafe { CGBitmapContextCreate(data.as_mut_ptr().cast(), w as usize, h as usize, 8, w as usize * 4, space.as_deref(), info) };
+                let e = ctx.and_then(|ctx| {
+                    CGContext::set_interpolation_quality(Some(&ctx), CGInterpolationQuality::High);
+                    let rect = objc2_core_foundation::CGRect::new(objc2_core_foundation::CGPoint::new(0.0, 0.0), objc2_core_foundation::CGSize::new(w as f64, h as f64));
+                    CGContext::draw_image(Some(&ctx), rect, Some(img));
+                    drop(ctx);
+                    let (ax, ay) = self.alloc(w + 1, h + 1)?;
+                    let region = MTLRegion { origin: MTLOrigin { x: ax as usize, y: ay as usize, z: 0 }, size: MTLSize { width: w as usize, height: h as usize, depth: 1 } };
+                    unsafe { self.atlas.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, NonNull::new(data.as_ptr() as *mut _).unwrap(), w as usize * 4) };
+                    let sz = self.atlas_size as f32;
+                    Some(GlyphEntry { uv: [ax as f32 / sz, ay as f32 / sz, (ax + w) as f32 / sz, (ay + h) as f32 / sz], w: w as f32, h: h as f32, left: 0.0, top: 0.0, color: true })
+                });
+                self.images.insert(ck, e);
+                e
+            }
+        };
+        if let Some(g) = entry {
+            f.insts.push(Inst { rect: [x, y, g.w, g.h], uv: g.uv, color: [1.0, 1.0, 1.0, 1.0], kind: 2, ..Default::default() });
+        }
     }
 
     /// Draw a string of UI text in cells starting at (x, y). Returns the

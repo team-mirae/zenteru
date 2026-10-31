@@ -119,6 +119,10 @@ Bundled plugins:
 | **setenvvar** | Session environment variables that apply to every command you type, but never to the prompt's own environment, your shell history, or commands sent by plugins. |
 | **complete** | Tab completion. Off by default: Tab goes to your shell as usual. You can turn on a ranked menu, and the JIS Korean IME integration, which merges IME readings with shell candidates. See [docs/IME_CONTRACT.md](docs/IME_CONTRACT.md). |
 
+Side panels can show images (any format macOS decodes), styled text, code,
+progress bars and dividers, not only plain text. Drag a panel's left edge
+to resize it; the width is remembered.
+
 User plugins go in `~/Library/Application Support/zenteru/plugins/<name>/`
 (with a `plugin.json`). iTerm2-style scripts go in `…/zenteru/Scripts/AutoLaunch/`.
 Plugin logs are written to `~/Library/Logs/zenteru/`.

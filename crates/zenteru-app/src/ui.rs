@@ -668,8 +668,22 @@ pub fn draw(app: &mut App, wid: &str) {
                 hits.panel_first_line = first;
                 hits.panel_text_origin = (input_x, text_y);
             }
-            // Messages, bottom-up.
-            let mut lines: Vec<(Rgba, Style, String, Option<(u64, Vec<(String, String)>)>)> = Vec::new();
+            // Messages, bottom-up, as rows: text (styled), code, images,
+            // progress bars, dividers and action buttons (blocks.rs).
+            enum PRow {
+                Text(Rgba, Style, String, Option<Grad>, bool),
+                Actions(u64, Vec<(String, String)>),
+                Image(crate::blocks::Image, u32, u32, String),
+                ImageCont,
+                Progress(f32, String),
+                Divider,
+                Blank,
+            }
+            use crate::blocks::{Block, TextColor};
+            let avail_rows = ((iy - 6.0 * s - header_bottom) / ch).max(0.0) as usize;
+            let max_img_w = inner_cells as f32 * cw;
+            let max_img_h = (avail_rows as f32 * ch * 0.85).max(ch);
+            let mut rows: Vec<PRow> = Vec::new();
             for m in &p.messages {
                 let (label, color) = match m.role.as_str() {
                     "user" => ("you", pal::ACCENT_MINT),
@@ -677,34 +691,113 @@ pub fn draw(app: &mut App, wid: &str) {
                     "tool" => ("tool", pal::ACCENT_GOLD),
                     _ => ("·", pal::MUTED),
                 };
-                lines.push((c(color), Style::Bold, label.to_string(), None));
+                rows.push(PRow::Text(c(color), Style::Bold, label.to_string(), None, false));
                 let body_color = if m.role == "tool" || m.role == "system" { c(pal::LABEL) } else { c(pal::FG) };
-                for wl in wrap(&m.text, inner_cells) {
-                    lines.push((body_color, Style::Regular, wl, None));
+                if !m.text.is_empty() || m.blocks.is_empty() {
+                    for wl in wrap(&m.text, inner_cells) {
+                        rows.push(PRow::Text(body_color, Style::Regular, wl, None, false));
+                    }
+                }
+                for b in &m.blocks {
+                    match b {
+                        Block::Text { text, color, bold, italic } => {
+                            let style = Style::from(*bold, *italic);
+                            let (col, grad) = match color {
+                                TextColor::Default => (body_color, None),
+                                TextColor::Muted => (c(pal::MUTED), None),
+                                TextColor::Rgb(rgb) => (c(*rgb), None),
+                                TextColor::Gradient => (c(pal::GRADIENT_FROM), Some(Grad { x0: inner_x, x1: inner_x + inner_cells as f32 * cw, to: grad_to() })),
+                            };
+                            for wl in wrap(text, inner_cells) {
+                                rows.push(PRow::Text(col, style, wl, grad, false));
+                            }
+                        }
+                        Block::Code { text } => {
+                            for wl in wrap(text, inner_cells.saturating_sub(2)) {
+                                rows.push(PRow::Text(c(pal::FG), Style::Regular, wl, None, true));
+                            }
+                        }
+                        Block::Image(img) => {
+                            let mw = img.max_cells.map_or(max_img_w, |mc| (mc as f32 * cw).min(max_img_w));
+                            let mh = img.max_rows.map_or(max_img_h, |mr| (mr as f32 * ch).min(max_img_h));
+                            let k = (mw / img.w as f32).min(mh / img.h as f32).min(1.0);
+                            let (dw, dh) = ((img.w as f32 * k).max(1.0) as u32, (img.h as f32 * k).max(1.0) as u32);
+                            let n = ((dh as f32 + 4.0 * s) / ch).ceil().max(1.0) as usize;
+                            rows.push(PRow::Image(img.clone(), dw, dh, img.alt.clone()));
+                            for _ in 1..n {
+                                rows.push(PRow::ImageCont);
+                            }
+                        }
+                        Block::Progress { value, label } => rows.push(PRow::Progress(*value, label.clone())),
+                        Block::Divider => rows.push(PRow::Divider),
+                    }
                 }
                 if !m.actions.is_empty() {
-                    lines.push((c(pal::FG), Style::Regular, String::new(), Some((m.id, m.actions.clone()))));
+                    rows.push(PRow::Actions(m.id, m.actions.clone()));
                 }
-                lines.push((c(pal::FG), Style::Regular, String::new(), None));
+                rows.push(PRow::Blank);
             }
-            let avail_rows = ((iy - 6.0 * s - header_bottom) / ch).max(0.0) as usize;
-            let end = lines.len().saturating_sub(p.scroll.min(lines.len().saturating_sub(avail_rows)));
+            let end = rows.len().saturating_sub(p.scroll.min(rows.len().saturating_sub(avail_rows)));
             let begin = end.saturating_sub(avail_rows);
-            for (k, (color, style, text, actions)) in lines[begin..end].iter().enumerate() {
+            // An image cut off at the top: say what it is instead.
+            let mut first_cut = begin < rows.len() && matches!(rows.get(begin), Some(PRow::ImageCont));
+            for (k, row) in rows[begin..end].iter().enumerate() {
                 let ly = header_bottom + k as f32 * ch;
-                if let Some((mid, acts)) = actions {
-                    let mut ax = inner_x;
-                    for (aid, label) in acts {
-                        let wc = str_width(label) + 2;
-                        let w = wc as f32 * cw;
-                        f.gradient_rect(ax, ly, w, ch, 6.0 * s, rgba(pal::GRADIENT_FROM, 0.9), rgba(pal::GRADIENT_TO, 0.9));
-                        renderer.text(&mut f, label, ax + cw, ly, c(pal::ON_GRADIENT), Style::Bold, wc, None, scale);
-                        hits.actions.push((p.id.clone(), *mid, aid.clone(), [ax, ly, w, ch]));
-                        ax += w + 6.0 * s;
+                match row {
+                    PRow::Text(color, style, text, grad, code) => {
+                        if *code {
+                            f.rect(inner_x - 2.0 * s, ly, inner_cells as f32 * cw + 4.0 * s, ch, c(pal::BG));
+                            renderer.text(&mut f, text, inner_x + cw, ly, *color, *style, inner_cells, None, scale);
+                        } else {
+                            renderer.text(&mut f, text, inner_x, ly, *color, *style, inner_cells, *grad, scale);
+                        }
                     }
-                } else {
-                    renderer.text(&mut f, text, inner_x, ly, *color, *style, inner_cells, None, scale);
+                    PRow::Actions(mid, acts) => {
+                        let mut ax = inner_x;
+                        for (aid, label) in acts {
+                            let wc = str_width(label) + 2;
+                            let w = wc as f32 * cw;
+                            f.gradient_rect(ax, ly, w, ch, 6.0 * s, rgba(pal::GRADIENT_FROM, 0.9), rgba(pal::GRADIENT_TO, 0.9));
+                            renderer.text(&mut f, label, ax + cw, ly, c(pal::ON_GRADIENT), Style::Bold, wc, None, scale);
+                            hits.actions.push((p.id.clone(), *mid, aid.clone(), [ax, ly, w, ch]));
+                            ax += w + 6.0 * s;
+                        }
+                    }
+                    PRow::Image(img, dw, dh, _) => {
+                        let fits = ly + *dh as f32 <= iy - 4.0 * s;
+                        if fits {
+                            renderer.push_image(&mut f, img.key, &img.cg, inner_x, ly + 2.0 * s, *dw, *dh);
+                        } else {
+                            renderer.text(&mut f, &format!("▣ {} ↓", img.alt), inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                        }
+                    }
+                    PRow::ImageCont => {
+                        if first_cut {
+                            first_cut = false;
+                            renderer.text(&mut f, "▣ image ↑", inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                        }
+                    }
+                    PRow::Progress(v, label) => {
+                        let bw = inner_cells as f32 * cw * 0.6;
+                        let bh = (ch * 0.45).round();
+                        let by = ly + (ch - bh) / 2.0;
+                        f.round_rect(inner_x, by, bw, bh, bh / 2.0, c(pal::CUR_LINE_BG));
+                        if *v > 0.0 {
+                            f.gradient_rect(inner_x, by, (bw * v).max(bh), bh, bh / 2.0, c(pal::GRADIENT_FROM), grad_to());
+                        }
+                        let text = if label.is_empty() { format!("{:.0}%", v * 100.0) } else { format!("{label} · {:.0}%", v * 100.0) };
+                        renderer.text(&mut f, &text, inner_x + bw + cw, ly, c(pal::LABEL), Style::Regular, inner_cells.saturating_sub((bw / cw) as usize + 1), None, scale);
+                    }
+                    PRow::Divider => {
+                        f.gradient_rect(inner_x, ly + ch / 2.0, inner_cells as f32 * cw, 1.0 * s, 0.0, rgba(pal::GRADIENT_FROM, 0.5), rgba(pal::GRADIENT_TO, 0.5));
+                    }
+                    PRow::Blank => {}
                 }
+            }
+            // The resize handle on the panel's left edge.
+            hits.panel_edge = [px - 4.0 * s, top, 8.0 * s, l.h - top];
+            if win.edge_hover || win.panel_resize.is_some() {
+                f.gradient_rect(px - 1.0 * s, top, 4.0 * s, l.h - top, 0.0, c(pal::GRADIENT_FROM), grad_to());
             }
         }
     }

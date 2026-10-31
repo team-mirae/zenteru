@@ -204,13 +204,26 @@ the same Metal grid as the terminal. One chat-style kind for now.
 |---|---|---|
 | `panel.create` | `{title, window_id?, modes?: [str], mode?}` | `{panel_id}` |
 | `panel.show` / `panel.hide` / `panel.toggle` | `{panel_id}` | `{}` |
-| `panel.append` | `{panel_id, role: "user"|"assistant"|"tool"|"system", text, actions?: [{id, label}]}` | `{message_id}` |
-| `panel.update` | `{panel_id, message_id, text?, actions?}` | `{}` (streaming) |
+| `panel.append` | `{panel_id, role: "user"|"assistant"|"tool"|"system", text?, actions?: [{id, label}], blocks?: [Block]}` | `{message_id}` |
+| `panel.update` | `{panel_id, message_id, text?, actions?, blocks?}` | `{}` (streaming, in-place previews) |
+| `panel.set_width` | `{panel_id, width}` | `{width}` — side-panel width in points (shared by all panels, saved; users can also drag the panel's left edge) |
 | `panel.clear` | `{panel_id}` | `{}` |
 | `panel.set_status` | `{panel_id, text}` | `{}` |
 | `panel.set_mode` | `{panel_id, mode}` | `{}` |
 | `panel.set_input` | `{panel_id, text, secret?: bool}` | `{}` — prefill the input box; `secret` masks it as gradient ● until submitted (setenvvar values, tokens) |
 | `panel.destroy` | `{panel_id}` | `{}` |
+
+Rich content: `blocks` (after `text`) may hold
+```
+{type: "text", text, color?: "#rrggbb"|"gradient"|"muted", bold?, italic?}
+{type: "code", text}
+{type: "image", base64? | path? (absolute), max_width?, max_height? (cells), alt?}
+{type: "progress", value: 0..1, label?}
+{type: "divider"}
+```
+Images are decoded by macOS (PNG, JPEG, GIF, HEIC, TIFF, WebP, PDF …, up to
+64 MiB / 8192 px a side), scaled to fit the panel and drawn by the GPU. A
+block that can't be read or decoded fails the call with `bad_request`.
 
 Panel events arrive on subscription kind `panel` (`notify.subscribe {kind:"panel"}`):
 `{panel_id, type: "input", text}` · `{panel_id, type: "mode", mode}` ·

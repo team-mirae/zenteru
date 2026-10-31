@@ -48,6 +48,9 @@ pub fn reduce_motion() -> bool {
     objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
+/// Fall speed relative to the first version (which was too fast).
+const RAIN_SPEED: f32 = 0.35;
+
 /// Cheap deterministic hash → 0..1.
 fn h(n: u32) -> f32 {
     let mut x = n.wrapping_mul(0x9E37_79B1) ^ 0x85EB_CA6B;
@@ -75,7 +78,7 @@ pub fn rain(f: &mut Frame, x: f32, y: f32, w: f32, hgt: f32, cell_h: f32, scale:
     for lane in 0..lanes {
         for k in 0..2u32 {
             let id = lane * 7 + k * 131 + 17;
-            let speed = hgt * (0.28 + 0.55 * h(id)) + 40.0 * scale; // px/s
+            let speed = (hgt * (0.28 + 0.55 * h(id)) + 40.0 * scale) * RAIN_SPEED; // px/s
             let len = cell_h * (1.2 + 3.5 * h(id + 3));
             let gap = hgt * (0.15 + 0.9 * h(id + 5));
             let period = (hgt + len + gap) / speed;

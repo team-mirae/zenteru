@@ -108,6 +108,9 @@ pub struct Win {
     pub layout: Layout,
     pub hits: Hits,
     pub dirty: bool,
+    /// The gutter is raining: redraw at a gentle frame rate.
+    pub rain: bool,
+    pub last_frame: Option<Instant>,
 }
 
 impl Win {
@@ -197,6 +200,8 @@ pub struct Sess {
     pub queued: Vec<Vec<u8>>,
     /// Something was typed on the current line (since Enter / ⌃C / ⌃U).
     pub line_typed: bool,
+    /// Since when a non-shell program has had the terminal (gutter rain).
+    pub app_since: Option<Instant>,
     pub vars: HashMap<String, String>,
     pub scroll_accum: f64,
     pub bell: Option<Instant>,
@@ -272,6 +277,7 @@ pub struct App {
     pending_alerts: Vec<(ConnId, Json, String, String, Vec<String>)>,
     /// Shell-mode line gutter (relative index + line code).
     pub gutter: bool,
+    last_minute: i64,
     last_screen_emit: Instant,
     screen_emit_due: Vec<String>,
 }
@@ -318,6 +324,7 @@ impl App {
             key_window: None,
             pending_alerts: Vec::new(),
             gutter: std::env::var("ZENTERU_GUTTER").map_or(true, |v| v != "0"),
+            last_minute: 0,
             last_screen_emit: Instant::now(),
             screen_emit_due: Vec::new(),
         }
@@ -363,6 +370,8 @@ impl App {
             layout: Layout::default(),
             hits: Hits::default(),
             dirty: true,
+            rain: false,
+            last_frame: None,
         };
         self.windows.push(win);
         self.relayout(&wid);
@@ -425,6 +434,7 @@ impl App {
                 comp_pending: None,
                 queued: Vec::new(),
                 line_typed: false,
+                app_since: None,
                 vars: HashMap::new(),
                 scroll_accum: 0.0,
                 bell: None,
@@ -519,6 +529,8 @@ impl App {
                     layout: Layout::default(),
                     hits: Hits::default(),
                     dirty: true,
+                    rain: false,
+                    last_frame: None,
                 });
                 wid
             }
@@ -612,6 +624,23 @@ impl App {
         self.poll_api();
         self.poll_sessions();
         self.expire_waits();
+        // The gutter clock: redraw when the minute turns.
+        if self.gutter {
+            let (_, _, minute) = crate::gutter::local_clock();
+            if minute != self.last_minute {
+                self.last_minute = minute;
+                self.windows.iter_mut().for_each(|w| w.dirty = true);
+            }
+        }
+        // Rain: ~30 fps in the key window, ~10 fps elsewhere.
+        for w in &mut self.windows {
+            if w.rain {
+                let every = if w.handle.is_key() { 33 } else { 100 };
+                if w.last_frame.is_none_or(|t| t.elapsed().as_millis() >= every) {
+                    w.dirty = true;
+                }
+            }
+        }
         let ids: Vec<String> = self.windows.iter().map(|w| w.id.clone()).collect();
         for id in ids {
             let needs = {

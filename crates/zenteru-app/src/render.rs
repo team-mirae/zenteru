@@ -107,6 +107,11 @@ fragment float4 fmain(VOut v [[stage_in]], texture2d<float> atlas [[texture(0)]]
             float4 g = grad(v, t);
             return float4(g.rgb * g.a, g.a) * mask;
         }
+        case 5: { // vertical gradient across the rect (top → bottom)
+            float t = (v.local.y + v.half_size.y) / max(v.half_size.y * 2.0, 1.0);
+            float4 g = mix(v.color, v.color2, clamp(t, 0.0, 1.0));
+            return float4(g.rgb * g.a, g.a) * mask;
+        }
         default:
             return float4(c.rgb * c.a, c.a) * mask;
     }
@@ -172,6 +177,13 @@ impl Frame {
 
     pub fn gradient_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, from: Rgba, to: Rgba) {
         self.insts.push(Inst { rect: [x, y, w, h], color: from, color2: to, kind: 3, radius: r, ..Default::default() });
+    }
+
+    /// Vertical gradient (top colour → bottom colour, alpha included).
+    pub fn vgradient_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, top: Rgba, bottom: Rgba) {
+        if w > 0.0 && h > 0.0 {
+            self.insts.push(Inst { rect: [x, y, w, h], color: top, color2: bottom, kind: 5, radius: r, ..Default::default() });
+        }
     }
 
     /// Rounded border of thickness `t`, coloured along a horizontal gradient.

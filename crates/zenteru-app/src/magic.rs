@@ -19,8 +19,8 @@ use crate::app::{App, Palette};
 /// Command names only the plugin that says hello as "hmxv" may claim.
 const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv")];
 
-const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
-const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
+pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
+pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
 const VIMS: &[&str] = &["vim", "nvim", "vi", "view", "vimdiff", "gvim", "mvim"];
 
 #[derive(Clone, Debug)]

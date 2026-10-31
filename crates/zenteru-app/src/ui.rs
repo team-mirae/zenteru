@@ -108,6 +108,7 @@ pub fn draw(app: &mut App, wid: &str) {
     let App { renderer, windows, sessions, panels, .. } = app;
     let win = &mut windows[wi];
     win.dirty = false;
+    win.rain = false;
     let l: Layout = win.layout.clone();
     if l.w < 10.0 || l.h < 10.0 {
         return;
@@ -252,6 +253,22 @@ pub fn draw(app: &mut App, wid: &str) {
     let focus_term = win.focus == Focus::Terminal && win.palette.is_none() && win.handle.is_key();
     if let Some(sid) = win.active_session().map(String::from) {
         if let Some(sess) = sessions.get_mut(&sid) {
+            // A program other than the shell has the terminal (Claude Code,
+            // vim, a build…): rain in the gutter, after a short grace period
+            // so quick commands don't flicker it.
+            let job = sess.s.job_name().unwrap_or_default();
+            let job = job.rsplit('/').next().unwrap_or("").to_string();
+            let shellish = sess.s.is_shell_foreground() || crate::magic::SHELLS.contains(&job.as_str()) || crate::magic::REMOTES.contains(&job.as_str());
+            if shellish {
+                sess.app_since = None;
+            } else if sess.app_since.is_none() {
+                sess.app_since = Some(Instant::now());
+            }
+            let app_mode = sess.app_since.is_some_and(|t| t.elapsed().as_millis() >= 500);
+            if sess.app_since.is_some() && !app_mode {
+                // Come back when the grace period is over.
+                animate = true;
+            }
             sess.s.dirty.store(false, Ordering::Release);
             let t = sess.s.term.lock().unwrap();
             let bg_default = t.bg_override.map(|(r, g, b)| Rgb(r, g, b)).unwrap_or(pal::BG);
@@ -259,33 +276,52 @@ pub fn draw(app: &mut App, wid: &str) {
             if bg_default != pal::BG {
                 f.rect(0.0, l.tabbar_h, l.panel_x, l.h - l.tabbar_h, c(bg_default));
             }
-            // Shell-mode gutter: relative index (ゼロ, -1, -2 … upward from the
-            // cursor's line) and the line's 3-character code.
-            if l.gutter_w > 0.0 && !t.alt_screen() {
-                let anchor = zenteru_term::lineref::anchor(&t);
+            // The gutter: in the shell, relative index (ゼロ, -1, -2 … upward
+            // from the cursor's line) and each line's 3-character code; while
+            // another program has the terminal, zencode rain. The clock sits at
+            // the bottom whenever those rows are free.
+            if l.gutter_w > 0.0 {
                 let gx = l.gutter_x;
+                let gw = l.term_x - cw * 0.5 - gx - 2.0 * s;
+                let rows_shown = l.rows.min(t.rows);
                 f.gradient_rect(l.term_x - cw * 0.5, l.term_y, 1.0 * s, (l.rows as f32) * ch, 0.0, rgba(pal::GRADIENT_FROM, 0.35), rgba(pal::GRADIENT_TO, 0.35));
-                for y in 0..l.rows.min(t.rows) {
-                    let abs = t.view_abs(y);
-                    if abs > anchor {
-                        break;
+                let clock_last_row = l.term_y + (l.rows.saturating_sub(1)) as f32 * ch;
+                if app_mode || t.alt_screen() {
+                    let rain_h = (l.rows.saturating_sub(2)) as f32 * ch - 4.0 * s;
+                    let tsec = started().elapsed().as_secs_f32();
+                    crate::gutter::rain(&mut f, gx, l.term_y, gw, rain_h, ch, s, tsec, crate::gutter::reduce_motion());
+                    crate::gutter::clock(renderer, &mut f, gx, clock_last_row, gw, cw, ch, scale);
+                    win.rain = true;
+                } else {
+                    let anchor = zenteru_term::lineref::anchor(&t);
+                    let mut last_numbered = 0usize;
+                    for y in 0..rows_shown {
+                        let abs = t.view_abs(y);
+                        if abs > anchor {
+                            break;
+                        }
+                        last_numbered = y + 1;
+                        let Some(row) = t.view_row(y) else { continue };
+                        let rel = abs as i64 - anchor as i64;
+                        let py = l.term_y + y as f32 * ch;
+                        let label = zenteru_term::lineref::rel_label(rel);
+                        let lw = str_width(&label);
+                        let lx = gx + (6usize.saturating_sub(lw)) as f32 * cw;
+                        if rel == 0 {
+                            let g = Grad { x0: lx, x1: lx + lw as f32 * cw, to: grad_to() };
+                            renderer.text(&mut f, &label, lx, py, c(pal::GRADIENT_FROM), Style::Bold, lw, Some(g), scale);
+                        } else {
+                            renderer.text(&mut f, &label, lx, py, c(pal::MUTED), Style::Regular, lw, None, scale);
+                        }
+                        if row.id != 0 {
+                            let code = zenteru_term::lineref::code(row.id);
+                            let color = if rel == 0 { rgba(pal::LABEL, 0.9) } else { rgba(pal::LABEL, 0.45) };
+                            renderer.text(&mut f, &code, gx + 7.0 * cw, py, color, Style::Regular, 3, None, scale);
+                        }
                     }
-                    let Some(row) = t.view_row(y) else { continue };
-                    let rel = abs as i64 - anchor as i64;
-                    let py = l.term_y + y as f32 * ch;
-                    let label = zenteru_term::lineref::rel_label(rel);
-                    let lw = str_width(&label);
-                    let lx = gx + (6usize.saturating_sub(lw)) as f32 * cw;
-                    if rel == 0 {
-                        let g = Grad { x0: lx, x1: lx + lw as f32 * cw, to: grad_to() };
-                        renderer.text(&mut f, &label, lx, py, c(pal::GRADIENT_FROM), Style::Bold, lw, Some(g), scale);
-                    } else {
-                        renderer.text(&mut f, &label, lx, py, c(pal::MUTED), Style::Regular, lw, None, scale);
-                    }
-                    if row.id != 0 {
-                        let code = zenteru_term::lineref::code(row.id);
-                        let color = if rel == 0 { rgba(pal::LABEL, 0.9) } else { rgba(pal::LABEL, 0.45) };
-                        renderer.text(&mut f, &code, gx + 7.0 * cw, py, color, Style::Regular, 3, None, scale);
+                    // Line numbers win: the clock only takes free rows.
+                    if last_numbered + 2 <= l.rows {
+                        crate::gutter::clock(renderer, &mut f, gx, clock_last_row, gw, cw, ch, scale);
                     }
                 }
             }
@@ -720,6 +756,7 @@ pub fn draw(app: &mut App, wid: &str) {
     if animate {
         win.dirty = true;
     }
+    win.last_frame = Some(Instant::now());
     win.handle.present(renderer, &f, (l.w, l.h));
 }
 

@@ -45,6 +45,9 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   up from the cursor's line, plus a 3-character code per line taken from a
   UUIDv7 stamped when the line arrived. You can cite either one to hmxv or
   to plugins.
+  While another program has the terminal (Claude Code, vim, a build), the
+  gutter shows zencode-gradient rain instead, which becomes a still gradient
+  with Reduce Motion on. A 24-hour clock and the date sit at the bottom.
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.

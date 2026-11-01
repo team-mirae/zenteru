@@ -282,7 +282,7 @@ class JisKoreanProvider(Provider):
             if not hanja:
                 hanja = [(p.text, "") for p in preds if p.kind_name == "hanja"]
             for h, comment in hanja[:MAX_HANJA]:
-                add(h, "hanja", "漢字" + (f" {comment.split(',')[0]}" if comment else ""), reading=h)
+                add(h, "hanja", "hanja" + (f" {comment.split(',')[0]}" if comment else ""), reading=h)
         return items
 
     # -------------------------------------------------------- shell hooks
@@ -313,4 +313,4 @@ class JisKoreanProvider(Provider):
 
 def _label(kind: str) -> str:
     return {"korean": "Korean reading", "korean-alt": "Korean reading", "mixed": "English + Korean",
-            "english": "English reading", "hanja": "漢字"}.get(kind, kind)
+            "english": "English reading", "hanja": "Hanja"}.get(kind, kind)

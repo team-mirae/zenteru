@@ -17,7 +17,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSPoint, NSRange, NSRect, NSSize, NSString,
-    NSTimer, NSRunLoop, NSRunLoopCommonModes, NSUInteger, NSNotFound, NSUserDefaults,
+    NSTimer, NSRunLoop, NSRunLoopCommonModes, NSUInteger, NSNotFound, NSUserDefaults, NSURL,
 };
 use objc2_quartz_core::CAMetalLayer;
 
@@ -31,6 +31,10 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static PLUGIN_MENU: RefCell<Option<Retained<NSMenu>>> = const { RefCell::new(None) };
     static DELEGATE: RefCell<Option<Retained<AppDelegate>>> = const { RefCell::new(None) };
+    /// Files to open that arrived before launch finished (Finder / `open`
+    /// send them before applicationDidFinishLaunching).
+    static PENDING_OPEN: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
+    static LAUNCHED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` with the app, unless it is already borrowed (re-entrant AppKit
@@ -911,10 +915,17 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish(&self, _n: &NSNotification) {
             build_menu(self);
+            let pending = PENDING_OPEN.with(|p| std::mem::take(&mut *p.borrow_mut()));
             with_app(|a| {
                 a.start_plugins();
-                a.new_window(None, None, None);
+                if pending.is_empty() {
+                    a.new_window(None, None, None);
+                } else {
+                    // Opened with files: those are the first window.
+                    a.open_paths(None, &pending);
+                }
             });
+            LAUNCHED.with(|l| l.set(true));
             let timer = unsafe {
                 NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(1.0 / 120.0, self, sel!(tick:), None, true)
             };
@@ -922,6 +933,19 @@ define_class!(
             let app = NSApplication::sharedApplication(mtm());
             #[allow(deprecated)]
             app.activateIgnoringOtherApps(true);
+        }
+
+        /// Finder, `open FILE` and `zenteru FILE`: scripts run in a new tab,
+        /// folders open a shell there.
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            let paths: Vec<std::path::PathBuf> = urls.iter().filter_map(|u| u.path()).map(|p| std::path::PathBuf::from(p.to_string())).collect();
+            if !LAUNCHED.with(Cell::get) {
+                PENDING_OPEN.with(|p| p.borrow_mut().extend(paths));
+                return;
+            }
+            let wid = key_window_id();
+            with_app_or_later(move |a| a.open_paths(wid.as_deref(), &paths));
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -1130,8 +1154,9 @@ fn parse_keybinding(kb: &str) -> (String, NSEventModifierFlags) {
     (key, m)
 }
 
-pub fn run() {
+pub fn run(open: Vec<std::path::PathBuf>) {
     let mtm = mtm();
+    PENDING_OPEN.with(|p| p.borrow_mut().extend(open));
     APP.with(|a| *a.borrow_mut() = Some(App::new()));
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);

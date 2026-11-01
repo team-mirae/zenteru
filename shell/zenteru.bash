@@ -62,4 +62,5 @@ trap '_zenteru_preexec' DEBUG
 PROMPT_COMMAND="_zt_ret=\$?;${PROMPT_COMMAND:+$PROMPT_COMMAND;}_zenteru_precmd"
 case "$PS1" in *'133;B'*) ;; *) PS1="$PS1"'\[\e]133;B\a\]' ;; esac
 
+[ -r "$ZENTERU_SHELL_DIR/zenteru-local.bash" ] && . "$ZENTERU_SHELL_DIR/zenteru-local.bash"
 [ -r "$ZENTERU_SHELL_DIR/complete/zenteru-complete.bash" ] && . "$ZENTERU_SHELL_DIR/complete/zenteru-complete.bash"

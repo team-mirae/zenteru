@@ -8,6 +8,8 @@
 #    so they never sit in the prompt's environment or in history, and are
 #    skipped for commands sent by plugins.
 #  * Tab-completion capture for the completion plugin (complete/).
+#  * Bare names of scripts in the current directory run as ./NAME when no
+#    such command exists (zenteru-local.zsh).
 
 [[ -n "${_ZENTERU_LOADED-}" ]] && return
 typeset -g _ZENTERU_LOADED=1
@@ -96,4 +98,5 @@ add-zsh-hook precmd _zenteru_precmd
 add-zsh-hook precmd _zenteru_first_precmd
 add-zsh-hook preexec _zenteru_preexec
 
+[[ -r "$ZENTERU_SHELL_DIR/zenteru-local.zsh" ]] && builtin source "$ZENTERU_SHELL_DIR/zenteru-local.zsh"
 [[ -r "$ZENTERU_SHELL_DIR/complete/zenteru-complete.zsh" ]] && builtin source "$ZENTERU_SHELL_DIR/complete/zenteru-complete.zsh"

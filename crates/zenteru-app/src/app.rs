@@ -516,6 +516,36 @@ impl App {
         Some((tid, sid))
     }
 
+    /// Open files and folders handed to the app (Finder, `open`, the
+    /// `zenteru FILE` command): a folder gets a shell there; a script runs
+    /// in a new shell tab in its folder, as if typed, and the shell stays
+    /// for its output. Tabs go to `wid` (the key window) or a new window.
+    pub fn open_paths(&mut self, wid: Option<&str>, paths: &[PathBuf]) {
+        let mut wid = wid.filter(|w| self.win_index(w).is_some()).map(String::from);
+        for path in paths {
+            let Some(OpenPlan { cwd, line }) = open_plan(path) else {
+                platform::notify("zenteru", &format!("Can't open {}", path.display()));
+                continue;
+            };
+            let cwd = cwd.to_string_lossy().into_owned();
+            let sid = match &wid {
+                Some(w) => self.new_tab(w, None, Some(&cwd), None).map(|(_, sid)| sid),
+                None => {
+                    let (w, _, sid) = self.new_window(None, Some(&cwd), None);
+                    wid = Some(w);
+                    Some(sid)
+                }
+            };
+            if let (Some(sid), Some(line)) = (sid, line) {
+                // The pty holds it until the shell reads its first line.
+                self.send_user(&sid, format!("{line}\r").as_bytes());
+            }
+        }
+        if let Some(w) = wid.as_deref().and_then(|w| self.win(w)) {
+            w.handle.show();
+        }
+    }
+
     pub fn find_tab(&self, tid: &str) -> Option<(usize, usize)> {
         self.windows.iter().enumerate().find_map(|(wi, w)| w.tabs.iter().position(|t| t.id == tid).map(|ti| (wi, ti)))
     }
@@ -2855,6 +2885,75 @@ pub fn extend_selection(origin: (Pos, Pos), cur: (Pos, Pos), unit: u8) -> Option
     let start = if key(cur.0) < key(origin.0) { cur.0 } else { origin.0 };
     let end = if key(cur.1) > key(origin.1) { cur.1 } else { origin.1 };
     Some((start, end))
+}
+
+/// What opening a path does: start a shell in `cwd` and type `line`.
+#[derive(Debug, PartialEq)]
+pub struct OpenPlan {
+    pub cwd: PathBuf,
+    pub line: Option<String>,
+}
+
+/// A folder opens a shell in it. A file runs from its own folder: directly
+/// when executable, else with its `#!` interpreter, else by extension
+/// (`.zsh`, `.bash`, anything else with `sh`).
+pub fn open_plan(path: &std::path::Path) -> Option<OpenPlan> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path).ok()?;
+    let path = std::fs::canonicalize(path).ok()?;
+    if meta.is_dir() {
+        return Some(OpenPlan { cwd: path, line: None });
+    }
+    let cwd = path.parent()?.to_path_buf();
+    let q = input::shell_quote(&path.to_string_lossy());
+    if meta.permissions().mode() & 0o111 != 0 {
+        return Some(OpenPlan { cwd, line: Some(q) });
+    }
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(&path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+    let first = String::from_utf8_lossy(&head[..n]).lines().next().unwrap_or("").to_string();
+    let interp = match first.strip_prefix("#!").map(str::trim).filter(|i| !i.is_empty()) {
+        Some(i) => i.to_string(),
+        None => match path.extension().and_then(|e| e.to_str()) {
+            Some("zsh") => "zsh".into(),
+            Some("bash") => "bash".into(),
+            _ => "sh".into(),
+        },
+    };
+    Some(OpenPlan { cwd, line: Some(format!("{interp} {q}")) })
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn plans() {
+        let d = std::env::temp_dir().join(format!("zt-open-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let d = std::fs::canonicalize(&d).unwrap();
+        let w = |name: &str, body: &str, mode: u32| {
+            let p = d.join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            p
+        };
+        let ds = d.to_string_lossy().to_string();
+        let plan = |p: &std::path::Path| open_plan(p).unwrap();
+        assert_eq!(plan(&d), OpenPlan { cwd: d.clone(), line: None });
+        let x = w("run me.sh", "echo hi\n", 0o755);
+        assert_eq!(plan(&x).line.unwrap(), format!("'{ds}/run me.sh'"));
+        assert_eq!(plan(&x).cwd, d);
+        let s = w("a.sh", "#!/bin/bash -e\necho\n", 0o644);
+        assert_eq!(plan(&s).line.unwrap(), format!("/bin/bash -e {ds}/a.sh"));
+        let z = w("b.zsh", "echo\n", 0o644);
+        assert_eq!(plan(&z).line.unwrap(), format!("zsh {ds}/b.zsh"));
+        let c = w("c.command", "echo\n", 0o644);
+        assert_eq!(plan(&c).line.unwrap(), format!("sh {ds}/c.command"));
+        assert!(open_plan(&d.join("missing.sh")).is_none());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }
 
 #[cfg(test)]

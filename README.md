@@ -63,6 +63,10 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   when nothing is playing. `@play`, `@pause`, `@mute`, `@unmute` and
   `@volume up|down|min|max|0–100|0.00–1.00` work on their own or as
   subcommands of `@music`, along with `@music next` and `@music prev`.
+- **Local scripts by name.** In a zenteru shell, `deploy.sh` runs
+  `./deploy.sh` when no command of that name exists (with a dim note
+  saying so). Real commands always win, and an existing
+  command-not-found handler still gets everything else.
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.
@@ -96,8 +100,10 @@ command into `~/.local/bin`. No sudo is needed. Set the variables on the
 curl -fsSL https://raw.githubusercontent.com/team-mirae/zenteru/main/install.sh | ZENTERU_VERSION=v0.1.0 ZENTERU_APP_DIR=~/Applications sh
 ```
 
-`zenteru` opens the app (or focuses it), and `zenteru sudo-auth` turns on
-Touch ID or YubiKey for sudo. Builds are on the
+`zenteru` opens the app (or focuses it), `zenteru FILE|DIR…` runs scripts
+in new tabs and opens shells in folders, and `zenteru sudo-auth` turns on
+Touch ID or YubiKey for sudo. zenteru is listed under Finder's Open With
+for shell scripts; Get Info → Change All makes it the default. Builds are on the
 [releases page](https://github.com/team-mirae/zenteru/releases). macOS 13
 or later is required.
 

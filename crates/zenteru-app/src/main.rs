@@ -26,7 +26,7 @@ fn main() {
         }
         Some("--help" | "-h") => {
             println!(
-                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru info         the ゼ splash with version and system facts\n  zenteru --version",
+                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru FILE|DIR…    run scripts in new tabs; open shells in folders\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru info         the ゼ splash with version and system facts\n  zenteru --version",
                 zenteru_text::brand::full_name()
             );
         }
@@ -40,13 +40,20 @@ fn main() {
             unsafe extern "C" {
                 fn isatty(fd: i32) -> i32;
             }
+            // `zenteru FILE…`: scripts run in a new tab, folders open a
+            // shell there (LaunchServices delivers them as openURLs).
+            let files: Vec<std::path::PathBuf> = args.iter().filter(|a| !a.starts_with("-psn")).map(std::path::PathBuf::from).collect();
+            if let Some(missing) = files.iter().find(|f| !f.exists()) {
+                eprintln!("zenteru: {}: no such file or directory", missing.display());
+                std::process::exit(1);
+            }
             if std::env::var_os("ZENTERU_DEBUG").is_none() && unsafe { isatty(0) } == 1 {
                 if let Some(bundle) = platform::app_bundle() {
-                    let ok = std::process::Command::new("/usr/bin/open").arg("-a").arg(&bundle).status().is_ok_and(|s| s.success());
+                    let ok = std::process::Command::new("/usr/bin/open").arg("-a").arg(&bundle).args(&files).status().is_ok_and(|s| s.success());
                     std::process::exit(if ok { 0 } else { 1 });
                 }
             }
-            view::run()
+            view::run(files)
         }
     }
 }

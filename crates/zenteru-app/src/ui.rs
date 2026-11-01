@@ -446,7 +446,7 @@ pub fn draw(app: &mut App, wid: &str) {
 
             // Password field: unmistakable gradient frame with ● per key.
             if pw && at_bottom {
-                let label = "  password · 비밀번호 · パスワード ";
+                let label = "  password ";
                 let min_cells = 26usize;
                 let room = cols.saturating_sub(cx);
                 let bx_col = if room < min_cells { cols.saturating_sub(min_cells) } else { cx };
@@ -482,7 +482,7 @@ pub fn draw(app: &mut App, wid: &str) {
 
             // Echo is on although the prompt asks for a secret.
             if echo_warning && at_bottom {
-                let msg = "⚠ This prompt SHOWS what you type — echo is ON · 입력이 화면에 보입니다 · 入力が表示されます";
+                let msg = "⚠ This prompt SHOWS what you type — echo is ON";
                 banner(renderer, &mut f, &l, py, cy, msg, pal::ACCENT_GOLD, false, scale);
                 let bx = l.term_x + cx as f32 * cw;
                 f.gradient_border(bx - 2.0 * s, py - 2.0 * s, l.term_x + cols as f32 * cw - bx + 2.0 * s, ch + 4.0 * s, 5.0 * s, 2.0 * s, c(pal::ACCENT_GOLD), c(pal::ERROR));
@@ -526,7 +526,7 @@ pub fn draw(app: &mut App, wid: &str) {
                     }
                     let fg = if sel { c(pal::ON_GRADIENT) } else { c(pal::FG) };
                     let tag = match item.source.as_str() {
-                        "ime" => "あ",
+                        "ime" => "⌨",
                         "history" => "↺",
                         _ => "›",
                     };
@@ -920,8 +920,13 @@ fn banner(r: &mut crate::render::Renderer, f: &mut Frame, l: &Layout, cursor_py:
     let ch = l.cell_h;
     let by = if cursor_row == 0 { cursor_py + ch + 4.0 * s } else { cursor_py - ch - 6.0 * s };
     let w = l.cols as f32 * l.cell_w;
+    // Opaque backing over the whole row the band sits on, so that row's text
+    // neither shows through the band nor peeks out around it. The input's
+    // own frame is drawn afterwards, on top.
+    let (top, bottom) = if cursor_row == 0 { (cursor_py + ch, by + ch + 2.0 * s) } else { (by, cursor_py) };
+    f.rect(l.term_x, top, w, bottom - top, c(pal::BG));
     if strong {
-        f.round_rect(l.term_x, by, w, ch + 2.0 * s, 5.0 * s, rgba(color, 0.92));
+        f.round_rect(l.term_x, by, w, ch + 2.0 * s, 5.0 * s, c(color));
         r.text(f, msg, l.term_x + 6.0 * s, by + 1.0 * s, c(pal::ON_GRADIENT), Style::Bold, l.cols.saturating_sub(1), None, scale);
     } else {
         f.round_rect(l.term_x, by, w, ch + 2.0 * s, 5.0 * s, rgba(color, 0.16));

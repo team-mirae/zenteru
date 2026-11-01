@@ -10,6 +10,7 @@ mod settings;
 mod splash;
 mod magic;
 mod music;
+mod open_click;
 mod platform;
 mod render;
 mod sudo_auth;

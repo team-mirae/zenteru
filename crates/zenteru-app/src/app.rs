@@ -230,6 +230,10 @@ pub struct Sess {
     pub last_phase: PromptPhase,
     /// The unit pressed on (start, end, unit) while a selection drag is live.
     pub sel_origin: Option<(Pos, Pos, u8)>,
+    /// A ⌘/⌃-click opened something: its drag and release are spent too.
+    pub open_click: bool,
+    /// A clicked script waiting to run in this (new) tab.
+    pub countdown: Option<crate::open_click::Countdown>,
 }
 
 #[derive(Clone)]
@@ -515,6 +519,8 @@ impl App {
                 bell: None,
                 last_phase: PromptPhase::Unknown,
                 sel_origin: None,
+                open_click: false,
+                countdown: None,
             },
         );
         if std::mem::take(&mut self.splash_pending) {
@@ -740,6 +746,7 @@ impl App {
         self.poll_api();
         self.poll_sessions();
         self.expire_waits();
+        self.run_countdowns();
         // The gutter clock: redraw when the minute turns.
         if self.gutter {
             let (_, _, minute) = crate::gutter::local_clock();
@@ -985,6 +992,12 @@ impl App {
             return self.panel_key(wid, &key, mods, has_marked);
         }
         let Some(sid) = self.windows[wi].active_session().map(String::from) else { return true };
+
+        // Any key cancels a clicked script's countdown (and is spent on it).
+        if let Some(c) = self.sessions.get_mut(&sid).and_then(|s| s.countdown.take()) {
+            self.with_term(&sid, |t| crate::open_click::rewrite_notice(t, c.row, crate::open_click::CANCELLED));
+            return true;
+        }
 
         // Completion menu navigation.
         if self.sessions.get(&sid).is_some_and(|s| s.menu.is_some()) && !has_marked {
@@ -1976,6 +1989,9 @@ impl App {
         let (col, row) = self.cell_at(wi, x, y);
         self.windows[wi].focus = Focus::Terminal;
         self.windows[wi].dirty = true;
+        if self.open_click(wid, &sid, btn, action, col, row, mods) {
+            return;
+        }
         let Some(s) = self.sessions.get_mut(&sid) else { return };
         let (mouse_mode, modes) = {
             let t = s.s.term.lock().unwrap();
@@ -2021,6 +2037,104 @@ impl App {
             }
         }
         s.s.dirty.store(true, Ordering::Release);
+    }
+
+    /// ⌘-click / ⌃-click on a link, folder or file opens it (see
+    /// `open_click`), even when a program tracks the mouse. True when the
+    /// event was spent on that.
+    fn open_click(&mut self, wid: &str, sid: &str, btn: MouseButton, action: MouseAction, col: usize, row: usize, mods: Mods) -> bool {
+        use crate::open_click::Target;
+        let Some(s) = self.sessions.get_mut(sid) else { return false };
+        if action != MouseAction::Press || btn != MouseButton::Left {
+            // The press opened something: swallow the rest of that click.
+            if s.open_click && btn != MouseButton::None {
+                if action == MouseAction::Release {
+                    s.open_click = false;
+                }
+                return true;
+            }
+            return false;
+        }
+        s.open_click = false;
+        if !(mods.cmd || mods.ctrl) || mods.alt || mods.shift {
+            return false;
+        }
+        let cwd = s.s.cwd().map(PathBuf::from);
+        let target = {
+            let t = s.s.term.lock().unwrap();
+            crate::open_click::target_at(&t, t.view_abs(row), col, cwd.as_deref())
+        };
+        let Some(target) = target else { return false };
+        s.open_click = true;
+        s.selection = None;
+        s.sel_origin = None;
+        match target {
+            Target::Url(url) => self.open_externally(wid, url.clone(), url),
+            Target::File(p) => {
+                let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                self.open_externally(wid, p.to_string_lossy().into_owned(), name);
+            }
+            Target::Dir(p) => {
+                self.new_tab(wid, None, Some(&p.to_string_lossy()), None);
+            }
+            Target::Script(p) => self.open_script(wid, &p),
+        }
+        true
+    }
+
+    /// `open` a URL or file in its default app, off the main thread; a
+    /// toast says how it went.
+    fn open_externally(&mut self, wid: &str, what: String, label: String) {
+        let tx = self.jobs_tx.clone();
+        let wid = wid.to_string();
+        std::thread::spawn(move || {
+            let r = match std::process::Command::new("/usr/bin/open").arg(&what).output() {
+                Ok(o) if o.status.success() => Ok(format!("Opened {label}")),
+                Ok(o) => Err(format!("Can't open {label}: {}", String::from_utf8_lossy(&o.stderr).trim())),
+                Err(e) => Err(format!("Can't open {label}: {e}")),
+            };
+            let _ = tx.send((wid, r));
+        });
+    }
+
+    /// A clicked script: a new tab in its folder announces it, then runs it
+    /// after `COUNTDOWN` unless a key is pressed there first.
+    fn open_script(&mut self, wid: &str, path: &std::path::Path) {
+        use crate::open_click;
+        let Some(OpenPlan { cwd, line: Some(line) }) = open_plan(path) else {
+            self.toast(wid, &format!("Can't open {}", path.display()), true);
+            return;
+        };
+        let Some((_, sid)) = self.new_tab(wid, None, Some(&cwd.to_string_lossy()), None) else { return };
+        let mut row = 0;
+        self.with_term(&sid, |t| row = open_click::print_notice(t));
+        if let Some(s) = self.sessions.get_mut(&sid) {
+            s.countdown = Some(open_click::Countdown { row, line, started: Instant::now(), shown: open_click::COUNTDOWN.as_secs() });
+        }
+    }
+
+    /// Tick the script countdowns: rewrite the seconds left, and type the
+    /// script's line once time is up (the pty holds it until the shell reads).
+    fn run_countdowns(&mut self) {
+        use crate::open_click::{self, COUNTDOWN};
+        let sids: Vec<String> = self.sessions.iter().filter(|(_, s)| s.countdown.is_some()).map(|(k, _)| k.clone()).collect();
+        for sid in sids {
+            let Some(s) = self.sessions.get_mut(&sid) else { continue };
+            let Some(c) = s.countdown.as_mut() else { continue };
+            let elapsed = c.started.elapsed();
+            if elapsed >= COUNTDOWN {
+                let c = s.countdown.take().unwrap();
+                self.with_term(&sid, |t| open_click::rewrite_notice(t, c.row, open_click::EXECUTING));
+                self.send_user(&sid, format!("{}\r", c.line).as_bytes());
+                continue;
+            }
+            let left = (COUNTDOWN - elapsed).as_secs_f64().ceil() as u64;
+            if left != c.shown {
+                c.shown = left;
+                let row = c.row;
+                self.with_term(&sid, |t| open_click::rewrite_notice(t, row, &open_click::countdown_text(left)));
+            }
+        }
     }
 
     pub fn scroll(&mut self, wid: &str, x: f32, y: f32, dy_px: f64, precise: bool) {
@@ -3115,8 +3229,7 @@ pub fn open_plan(path: &std::path::Path) -> Option<OpenPlan> {
     let interp = match first.strip_prefix("#!").map(str::trim).filter(|i| !i.is_empty()) {
         Some(i) => i.to_string(),
         None => match path.extension().and_then(|e| e.to_str()) {
-            Some("zsh") => "zsh".into(),
-            Some("bash") => "bash".into(),
+            Some(e @ ("zsh" | "bash" | "ksh" | "dash" | "fish" | "csh" | "tcsh")) => e.into(),
             _ => "sh".into(),
         },
     };

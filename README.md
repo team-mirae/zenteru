@@ -29,6 +29,12 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   - ⌘←/⌘→/⌘⌫ work on the whole line.
   - ⌘↑/⌘↓ jump between prompts.
   - Double-click selects a letterblock.
+- **⌘-click or ⌃-click to open** a URL, OSC 8 link, or path on screen
+  (relative to the shell's folder; `file.rs:12:3` and git's `a/`, `b/`
+  work). Links open in the default browser, folders in a new tab, files in
+  their default app. Scripts open in a new tab in their folder and run
+  after `Executing shell script in 3 seconds. Press any key or abort to
+  cancel.` It works while a program tracks the mouse, too.
 - **Tabs, Chrome-style.**
   - A single session still shows a tab.
   - Drag a tab to reorder it, drag it out to make a new window, or drop it

@@ -275,6 +275,15 @@ impl Terminal {
         }
     }
 
+    /// The row at absolute line `abs`, for rewriting in place (marks the
+    /// terminal changed).
+    pub fn line_mut(&mut self, abs: u64) -> Option<&mut Row> {
+        let rel = abs.checked_sub(self.dropped)? as usize;
+        self.generation = self.generation.wrapping_add(1);
+        let sb = self.scrollback.len();
+        if rel < sb { self.scrollback.get_mut(rel) } else { self.grid().get_mut(rel - sb) }
+    }
+
     /// The row shown at view row `y`, accounting for `display_offset`.
     pub fn view_row(&self, y: usize) -> Option<&Row> {
         let base = self.screen_base() - self.display_offset as u64;

@@ -323,7 +323,7 @@ in `ZENTERU_API_SOCKET`.
 
 ```jsonc
 → {"id": 1, "method": "auth.hello", "params": {"cookie": "<ZENTERU_COOKIE>", "name": "tinyhelper"}}
-← {"id": 1, "result": {"app": "zenteru", "version": "0.1.22", "protocol": 1}}
+← {"id": 1, "result": {"app": "zenteru", "version": "0.1.23", "protocol": 1}}
 → {"id": 2, "method": "rpc.register", "params": {"handler": "tinyhelper.agent", "kind": "agent", "title": "tinyhelper", "priority": 5}}
 ← {"id": 2, "result": {}}
 → {"id": 3, "method": "notify.subscribe", "params": {"kind": "panel"}}

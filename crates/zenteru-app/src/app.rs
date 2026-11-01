@@ -1218,6 +1218,10 @@ impl App {
         self.chord_input();
         let tab = self.win(wid).and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
         let action = self.close_guard.press(kind, Side::of(flags), repeat, tab.as_deref(), Instant::now());
+        if std::env::var_os("ZENTERU_DEBUG").is_some() {
+            let tabs = self.win(wid).map(|w| w.tabs.len()).unwrap_or(0);
+            eprintln!("zenteru: close_key {kind:?} flags={flags:#x} side={:?} repeat={repeat} -> {action:?} (tabs {tabs})", Side::of(flags));
+        }
         self.windows.iter_mut().for_each(|w| w.dirty = true);
         if action == Action::Now {
             match kind {
@@ -1841,6 +1845,9 @@ impl App {
                 self.new_window(None, None, None);
             }
             "close_tab" => {
+                if std::env::var_os("ZENTERU_DEBUG").is_some() {
+                    eprintln!("zenteru: builtin close_tab (menu)");
+                }
                 if let Some(t) = self.win(wid).and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone()) {
                     self.close_tab(&t);
                 }

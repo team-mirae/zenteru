@@ -321,14 +321,8 @@ define_class!(
         // a chord with a key in it is seen here.
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
-            // Plain ⌘W / ⌘Q go through the close timer (src/close_guard.rs)
-            // instead of the menu; any other shortcut calls off a countdown
-            // and is spent on it.
-            if self.close_shortcut(event) {
-                true.into()
-            } else {
-                unsafe { msg_send![super(self), performKeyEquivalent: event] }
-            }
+            with_app(|a| a.chord_input());
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
         }
 
         #[unsafe(method(mouseDown:))]
@@ -568,22 +562,6 @@ impl TermView {
         self.ivars().ime_acted.set(false);
         let arr = NSArray::from_retained_slice(&[event.retain()]);
         self.interpretKeyEvents(&arr);
-    }
-
-    /// ⌘W / ⌘Q, or a shortcut that cancelled their countdown: handled.
-    fn close_shortcut(&self, event: &NSEvent) -> bool {
-        let wid = self.wid();
-        if let Some(kind) = close_kind(event) {
-            let flags = event.modifierFlags().bits() as u64;
-            let repeat = event.isARepeat();
-            with_app(|a| a.close_key(&wid, kind, flags, repeat));
-            quit_if_requested();
-            return true;
-        }
-        with_app(|a| {
-            a.chord_input();
-            a.close_cancel()
-        }) == Some(true)
     }
 
     fn on_mouse(&self, event: &NSEvent, btn: MouseButton, action: MouseAction) {
@@ -992,6 +970,7 @@ define_class!(
                 }
             });
             LAUNCHED.with(|l| l.set(true));
+            install_close_monitor();
             let timer = unsafe {
                 NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(1.0 / 120.0, self, sel!(tick:), None, true)
             };
@@ -1099,6 +1078,35 @@ fn close_kind(e: &NSEvent) -> Option<crate::close_guard::Kind> {
         "q" => Some(Kind::Quit),
         _ => None,
     }
+}
+
+/// ⌘W / ⌘Q on a timer (src/close_guard.rs). A local monitor sees every key
+/// press before any window, view or menu does, so the menu's ⌘W / ⌘Q never
+/// get them. Any other key while a countdown runs calls it off and is spent.
+fn install_close_monitor() {
+    let block = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        let e = unsafe { event.as_ref() };
+        if let Some(kind) = close_kind(e) {
+            let wid = e.window(mtm()).and_then(|w| window_id_of(&w)).or_else(key_window_id);
+            if let Some(wid) = wid {
+                let flags = e.modifierFlags().bits() as u64;
+                let repeat = e.isARepeat();
+                with_app(|a| a.close_key(&wid, kind, flags, repeat));
+                quit_if_requested();
+                return std::ptr::null_mut();
+            }
+        } else if with_app(|a| a.close_cancel()) == Some(true) {
+            return std::ptr::null_mut();
+        }
+        event.as_ptr()
+    });
+    let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(objc2_app_kit::NSEventMask::KeyDown, &block) };
+    // Lives as long as the app.
+    std::mem::forget(monitor);
+}
+
+fn window_id_of(win: &NSWindow) -> Option<String> {
+    with_app(|a| a.windows.iter().find(|w| std::ptr::eq(Retained::as_ptr(&w.handle.window), win)).map(|w| w.id.clone())).flatten()
 }
 
 /// ⌘Q decided to quit: terminate outside the app borrow, so

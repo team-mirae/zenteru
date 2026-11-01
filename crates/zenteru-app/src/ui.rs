@@ -156,7 +156,18 @@ pub fn draw(app: &mut App, wid: &str) {
             active_x = Some(x);
         } else {
             if hovered {
-                f.round_rect(x + 3.0 * s, tab_top + 2.0 * s, tab_w - 6.0 * s, tab_h - 7.0 * s, 7.0 * s, rgba(Rgb(255, 255, 255), 0.22));
+                // Keep clear of the active tab's curved feet, which are
+                // painted over in the bar colour and would cut a dot out
+                // of the highlight.
+                let (mut hx, mut hw) = (x + 3.0 * s, tab_w - 6.0 * s);
+                if i + 1 == win.active {
+                    hw -= r;
+                }
+                if i == win.active + 1 {
+                    hx += r;
+                    hw -= r;
+                }
+                f.round_rect(hx, tab_top + 2.0 * s, hw, tab_h - 7.0 * s, 7.0 * s, rgba(Rgb(255, 255, 255), 0.22));
             } else if i + 1 != win.active && i + 1 < win.tabs.len() {
                 f.rect(x + tab_w - 1.0 * s, tab_top + 9.0 * s, 1.0 * s, tab_h - 18.0 * s, rgba(pal::ON_GRADIENT, 0.3));
             }

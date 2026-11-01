@@ -356,6 +356,10 @@ pub struct App {
     /// Left ⌥ + right ⌥ opens the agentic helper (`@option-to-agent`).
     pub opt_chord: crate::chord::Chord,
     pub opt_chord_on: bool,
+    /// ⌘W / ⌘Q countdowns (src/close_guard.rs).
+    pub close_guard: crate::close_guard::Guard,
+    /// Quit at the next chance outside the app borrow (the view does it).
+    pub quit_requested: bool,
     /// `@option-to-agent set-helper NAME`: the helper it prefers.
     pub default_agent: Option<String>,
     /// The helper last opened or handed a Black Magic line.
@@ -425,6 +429,8 @@ impl App {
                 .unwrap_or(crate::gutter::RainStyle::Drops),
             cmd_chord: crate::chord::Chord::command(),
             opt_chord: crate::chord::Chord::option(),
+            close_guard: Default::default(),
+            quit_requested: false,
             opt_chord_on: crate::settings::load().get("option_to_agent").as_bool().unwrap_or(true),
             default_agent: crate::settings::load().get("default_agent").as_str().map(String::from),
             recent_agent: crate::settings::load().get("recent_agent").as_str().map(String::from),
@@ -788,6 +794,7 @@ impl App {
         self.poll_sessions();
         self.expire_waits();
         self.run_countdowns();
+        self.run_close_guard();
         // The gutter clock: redraw when the minute turns.
         if self.gutter {
             let (_, _, minute) = crate::gutter::local_clock();
@@ -1017,6 +1024,10 @@ impl App {
         self.chord_input();
         let Some(wi) = self.win_index(wid) else { return true };
         self.windows[wi].dirty = true;
+        // Any key calls off a ⌘W / ⌘Q countdown (and is spent on it).
+        if self.close_cancel() {
+            return true;
+        }
 
         if self.windows[wi].palette.is_some() {
             if has_marked {
@@ -1199,6 +1210,49 @@ impl App {
     pub fn chord_input(&mut self) {
         self.cmd_chord.other_input();
         self.opt_chord.other_input();
+    }
+
+    /// Plain ⌘W / ⌘Q pressed in window `wid` (raw modifierFlags).
+    pub fn close_key(&mut self, wid: &str, kind: crate::close_guard::Kind, flags: u64, repeat: bool) {
+        use crate::close_guard::{Action, Kind, Side};
+        self.chord_input();
+        let tab = self.win(wid).and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
+        let action = self.close_guard.press(kind, Side::of(flags), repeat, tab.as_deref(), Instant::now());
+        self.windows.iter_mut().for_each(|w| w.dirty = true);
+        if action == Action::Now {
+            match kind {
+                Kind::Tab => {
+                    if let Some(t) = tab {
+                        self.close_tab(&t);
+                    }
+                }
+                Kind::Quit => self.quit_requested = true,
+            }
+        }
+    }
+
+    /// Any other key or click: call off a ⌘W / ⌘Q countdown. True when one
+    /// was running (the key is then spent on it).
+    pub fn close_cancel(&mut self) -> bool {
+        let cancelled = self.close_guard.cancel();
+        if cancelled {
+            self.windows.iter_mut().for_each(|w| w.dirty = true);
+        }
+        cancelled
+    }
+
+    fn run_close_guard(&mut self) {
+        use crate::close_guard::Kind;
+        let Some(p) = self.close_guard.expired(Instant::now()) else { return };
+        self.windows.iter_mut().for_each(|w| w.dirty = true);
+        match p.kind {
+            Kind::Tab => {
+                if let Some(t) = p.tab {
+                    self.close_tab(&t);
+                }
+            }
+            Kind::Quit => self.quit_requested = true,
+        }
     }
 
     /// Focus left the window.

@@ -42,6 +42,10 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   - Dragging the only tab moves the window.
   - ⌘[ / ⌘] (or ⌘⇧[ / ⌘⇧], ⌃⇧⇥ / ⌃⇥) and a mouse's back / forward side
     buttons switch to the previous / next tab.
+  - Closing is guarded by which ⌘ you hold. Left ⌘W closes the tab at
+    once; right ⌘W closes it after 1.5 s, and ⌘Q (either ⌘) quits after
+    3 s. Press ⌘W / ⌘Q again to go now, or any other key or click to cancel.
+    Both ⌘ held closes or quits at once.
   - The whole top bar uses the zencode gradient, and the window corners are
     square.
 - **Black Magic.** Type `@` at an empty prompt (local or over ssh), or in

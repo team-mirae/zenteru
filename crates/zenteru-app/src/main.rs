@@ -3,6 +3,7 @@
 
 mod app;
 mod chord;
+mod close_guard;
 mod font;
 mod blocks;
 mod gutter;

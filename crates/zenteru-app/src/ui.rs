@@ -107,6 +107,11 @@ pub fn draw(app: &mut App, wid: &str) {
     let magic_items = app.windows[wi].palette.as_ref().map(|p| app.magic_items(&p.text)).unwrap_or_default();
     let rain_style = app.rain_style;
     let rain_frame = app.gutter_frame.clone().filter(|f| f.3.elapsed().as_secs() < 3);
+    // A ⌘W countdown shows in the tab's window, a ⌘Q one in every window.
+    let closing = app.close_guard.pending.clone().filter(|p| match &p.tab {
+        Some(t) if p.kind == crate::close_guard::Kind::Tab => app.windows[wi].tabs.iter().any(|x| x.id == *t),
+        _ => p.kind == crate::close_guard::Kind::Quit,
+    });
     let App { renderer, windows, sessions, panels, .. } = app;
     let win = &mut windows[wi];
     win.dirty = false;
@@ -898,6 +903,30 @@ pub fn draw(app: &mut App, wid: &str) {
             renderer.text(&mut f, &msg, tx + cw, ty, rgba(if err { pal::ERROR } else { pal::FG }, alpha), Style::Bold, wc, None, scale);
         } else {
             win.toast = None;
+        }
+    }
+
+    // ⌘W / ⌘Q countdown: dim everything below the tab bar, a pill in the
+    // middle with the seconds left and a bar that runs down.
+    if let Some(p) = closing {
+        animate = true;
+        let now = std::time::Instant::now();
+        let msg = crate::close_guard::message(&p, now);
+        f.rect(0.0, l.tabbar_h, l.w, l.h - l.tabbar_h, rgba(Rgb(0, 0, 0), 0.45));
+        let wc = str_width(&msg) + 4;
+        let tw = (wc as f32 * cw).min(l.w - 16.0 * s);
+        let th = ch * 2.0 + 8.0 * s;
+        let tx = (l.w - tw) / 2.0;
+        let ty = l.tabbar_h + (l.h - l.tabbar_h - th) / 2.0;
+        f.round_rect(tx, ty, tw, th, 10.0 * s, rgba(Rgb(30, 26, 44), 0.97));
+        f.gradient_border(tx, ty, tw, th, 10.0 * s, 1.5 * s, c(pal::GRADIENT_FROM), grad_to());
+        renderer.text(&mut f, &msg, tx + 2.0 * cw, ty + ch * 0.5, c(pal::FG), Style::Bold, wc.saturating_sub(4), None, scale);
+        let frac = p.left(now).as_secs_f32() / p.total.as_secs_f32().max(0.001);
+        let (bx, bw, bh) = (tx + 2.0 * cw, tw - 4.0 * cw, 3.0 * s);
+        let by = ty + th - ch * 0.5 - bh;
+        f.round_rect(bx, by, bw, bh, bh / 2.0, rgba(pal::ON_GRADIENT, 0.15));
+        if frac > 0.0 {
+            f.gradient_rect(bx, by, bw * frac.min(1.0), bh, bh / 2.0, c(pal::GRADIENT_FROM), grad_to());
         }
     }
 

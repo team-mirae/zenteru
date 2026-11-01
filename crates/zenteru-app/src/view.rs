@@ -321,8 +321,14 @@ define_class!(
         // a chord with a key in it is seen here.
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
-            with_app(|a| a.chord_input());
-            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+            // Plain ⌘W / ⌘Q go through the close timer (src/close_guard.rs)
+            // instead of the menu; any other shortcut calls off a countdown
+            // and is spent on it.
+            if self.close_shortcut(event) {
+                true.into()
+            } else {
+                unsafe { msg_send![super(self), performKeyEquivalent: event] }
+            }
         }
 
         #[unsafe(method(mouseDown:))]
@@ -360,6 +366,7 @@ define_class!(
                     let wid = self.wid();
                     with_app(|a| {
                         a.chord_input();
+                        a.close_cancel();
                         a.builtin(&wid, if n == 3 { "prev_tab" } else { "next_tab" });
                     });
                 }
@@ -563,13 +570,32 @@ impl TermView {
         self.interpretKeyEvents(&arr);
     }
 
+    /// ⌘W / ⌘Q, or a shortcut that cancelled their countdown: handled.
+    fn close_shortcut(&self, event: &NSEvent) -> bool {
+        let wid = self.wid();
+        if let Some(kind) = close_kind(event) {
+            let flags = event.modifierFlags().bits() as u64;
+            let repeat = event.isARepeat();
+            with_app(|a| a.close_key(&wid, kind, flags, repeat));
+            quit_if_requested();
+            return true;
+        }
+        with_app(|a| {
+            a.chord_input();
+            a.close_cancel()
+        }) == Some(true)
+    }
+
     fn on_mouse(&self, event: &NSEvent, btn: MouseButton, action: MouseAction) {
         let (x, y) = self.point_px(event);
         let wid = self.wid();
         let mods = mods_of(event.modifierFlags());
         let clicks = if action == MouseAction::Press { event.clickCount() } else { 0 };
         if action == MouseAction::Press {
-            with_app(|a| a.chord_input());
+            with_app(|a| {
+                a.chord_input();
+                a.close_cancel();
+            });
         }
         let screen = NSEvent::mouseLocation();
         let view = self.retain();
@@ -1019,6 +1045,7 @@ define_class!(
                     NSApplication::sharedApplication(mtm()).terminate(None);
                 }
             });
+            quit_if_requested();
         }
 
         #[unsafe(method(builtin:))]
@@ -1058,6 +1085,29 @@ define_class!(
         }
     }
 );
+
+/// Plain ⌘W / ⌘Q (no ⇧, ⌃ or ⌥): which close it is.
+fn close_kind(e: &NSEvent) -> Option<crate::close_guard::Kind> {
+    use crate::close_guard::Kind;
+    let f = e.modifierFlags();
+    let others = NSEventModifierFlags::Shift | NSEventModifierFlags::Control | NSEventModifierFlags::Option;
+    if !f.contains(NSEventModifierFlags::Command) || f.intersects(others) {
+        return None;
+    }
+    match e.charactersIgnoringModifiers()?.to_string().to_lowercase().as_str() {
+        "w" => Some(Kind::Tab),
+        "q" => Some(Kind::Quit),
+        _ => None,
+    }
+}
+
+/// ⌘Q decided to quit: terminate outside the app borrow, so
+/// applicationWillTerminate: can still shut the app down.
+fn quit_if_requested() {
+    if with_app(|a| std::mem::take(&mut a.quit_requested)) == Some(true) {
+        NSApplication::sharedApplication(mtm()).terminate(None);
+    }
+}
 
 fn key_window_id() -> Option<String> {
     let app = NSApplication::sharedApplication(mtm());

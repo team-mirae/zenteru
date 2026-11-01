@@ -180,7 +180,11 @@ Kinds:
 * `agent` — an **agentic helper** (Consumer<String>): Black Magic lines that
   match no command go to the registered helper with the highest `priority`,
   as `args: {text, session_id, window_id, tab_id, source: "black_magic"}`.
-  Answer at once and work in the background.
+  Left ⌥ + right ⌥ calls one helper (the default from
+  `@option-to-agent set-helper NAME`, else the most recently used, else
+  hmxv) with `text: ""` and `source: "open"`: show and focus your UI, ask
+  nothing. Answer at once and work in the background. Guide:
+  [AGENTIC_HELPERS.md](AGENTIC_HELPERS.md).
 * `drop_handler` — called when files or image data are dropped onto a
   session, or pasted when the clipboard holds an image or files but no
   text. `args: {session_id, source: "drop"|"paste", items: [Item]}`.

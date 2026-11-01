@@ -9,7 +9,7 @@ import unittest
 from fakes import COOKIE, FakeZenteru, ScriptedProvider
 from hmxv.client import Connection
 from hmxv.config import Config
-from hmxv.plugin import EXIT_HANDLER, TOGGLE_HANDLER, HmxvApp
+from hmxv.plugin import AGENT_HANDLER, EXIT_HANDLER, TOGGLE_HANDLER, HmxvApp
 from hmxv.providers.base import ToolCall, TurnResult
 from hmxv.safety import HIDDEN_LINE
 
@@ -89,6 +89,16 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
         # second toggle hides via panel.toggle
         await self.srv.invoke(TOGGLE_HANDLER, {"window_id": "w1"})
         await self.srv.wait_for(lambda: self.srv.methods("panel.toggle"))
+
+    async def test_open_from_option_chord(self):
+        # Left ⌥ + right ⌥: source "open" with no text shows the panel and
+        # asks the model nothing.
+        await self.make_app()
+        self.assertEqual(self.srv.handlers[AGENT_HANDLER]["kind"], "agent")
+        await self.srv.invoke(AGENT_HANDLER, {"text": "", "source": "open", "window_id": "w1", "tab_id": "t1", "session_id": "s1"})
+        await self.srv.wait_for(lambda: self.srv.methods("panel.show"))
+        self.assertEqual(self.srv.methods("panel.create")[0]["window_id"], "w1")
+        self.assertEqual(self.appended("user"), [])
 
     async def test_plan_mode_run(self):
         await self.make_app("plan")

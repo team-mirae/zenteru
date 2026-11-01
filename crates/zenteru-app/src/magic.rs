@@ -18,7 +18,7 @@ use crate::app::{App, Palette};
 
 /// Command names a plugin may only claim if it says hello as the owner
 /// ("" = zenteru's own built-ins: no plugin may claim them).
-const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("trim", ""), ("command-to-black-magic", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
+const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("trim", ""), ("command-to-black-magic", ""), ("option-to-agent", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
 
 pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
 pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
@@ -205,6 +205,8 @@ impl App {
                     self.music(wid, &b, rest);
                 } else if b == "command_to_black_magic" {
                     self.set_cmd_chord(wid, rest);
+                } else if b == "option_to_agent" {
+                    self.set_opt_chord(wid, rest);
                 } else {
                     self.builtin(wid, &b);
                 }
@@ -226,6 +228,7 @@ impl App {
             let tid = w.as_ref().and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
             let sid = w.and_then(|w| w.active_session()).map(String::from);
             let args = Json::obj().with("text", line).with("window_id", wid).with("tab_id", tid).with("session_id", sid).with("source", "black_magic");
+            self.note_agent_used(&reg);
             self.call_handler(&reg, args);
             return true;
         }

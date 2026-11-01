@@ -37,6 +37,9 @@ class LineContents:
     landed_ms: Optional[int] = None
     #: Absolute line index (0 = oldest scrollback line).
     line: Optional[int] = None
+    #: The line holds a password prompt being answered right now (echo
+    #: off): never send its text anywhere, e.g. to a model.
+    password: bool = False
 
     def __str__(self) -> str:
         return self.string
@@ -125,6 +128,7 @@ def line_from_dict(line: dict[str, Any]) -> LineContents:
         line.get("id"),
         line.get("landed_ms"),
         line.get("line"),
+        bool(line.get("password", False)),
     )
 
 

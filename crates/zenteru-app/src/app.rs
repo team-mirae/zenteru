@@ -306,8 +306,15 @@ pub struct App {
     last_minute: i64,
     pub rain_style: crate::gutter::RainStyle,
     /// Left ⌘ + right ⌘ opens Black Magic (`@command-to-black-magic`).
-    pub cmd_chord: crate::chord::CmdChord,
+    pub cmd_chord: crate::chord::Chord,
     pub cmd_chord_on: bool,
+    /// Left ⌥ + right ⌥ opens the agentic helper (`@option-to-agent`).
+    pub opt_chord: crate::chord::Chord,
+    pub opt_chord_on: bool,
+    /// `@option-to-agent set-helper NAME`: the helper it prefers.
+    pub default_agent: Option<String>,
+    /// The helper last opened or handed a Black Magic line.
+    pub recent_agent: Option<String>,
     /// Latest frame from a custom gutter driver: (width, height, RGBA, when).
     pub gutter_frame: Option<(u32, u32, std::rc::Rc<Vec<u8>>, Instant)>,
     last_gutter_event: (u32, u32, bool, &'static str),
@@ -371,7 +378,11 @@ impl App {
                 .or_else(|| crate::settings::load().get("rain").as_str().map(String::from))
                 .and_then(|v| crate::gutter::RainStyle::parse(&v))
                 .unwrap_or(crate::gutter::RainStyle::Drops),
-            cmd_chord: crate::chord::CmdChord::default(),
+            cmd_chord: crate::chord::Chord::command(),
+            opt_chord: crate::chord::Chord::option(),
+            opt_chord_on: crate::settings::load().get("option_to_agent").as_bool().unwrap_or(true),
+            default_agent: crate::settings::load().get("default_agent").as_str().map(String::from),
+            recent_agent: crate::settings::load().get("recent_agent").as_str().map(String::from),
             cmd_chord_on: crate::settings::load().get("command_to_black_magic").as_bool().unwrap_or(true),
             gutter_frame: None,
             last_gutter_event: (0, 0, false, ""),
@@ -955,7 +966,7 @@ impl App {
     /// Handle a key press. Returns false when it should go to the IME
     /// (`interpretKeyEvents`) instead.
     pub fn key_down(&mut self, wid: &str, key: Key, mods: Mods, has_marked: bool) -> bool {
-        self.cmd_chord.other_input();
+        self.chord_input();
         let Some(wi) = self.win_index(wid) else { return true };
         self.windows[wi].dirty = true;
 
@@ -1130,11 +1141,31 @@ impl App {
         crate::splash::Info { version: zenteru_text::brand::VERSION.to_string(), shell, font: Some(font), plugins }
     }
 
+    /// A key or click: any chord in progress was a shortcut instead.
+    pub fn chord_input(&mut self) {
+        self.cmd_chord.other_input();
+        self.opt_chord.other_input();
+    }
+
+    /// Focus left the window.
+    pub fn chord_reset(&mut self) {
+        self.cmd_chord.reset();
+        self.opt_chord.reset();
+    }
+
     /// A modifier key changed in window `wid` (raw modifierFlags).
-    pub fn cmd_chord_flags(&mut self, wid: &str, flags: u64) {
-        if !self.cmd_chord.flags(flags) || !self.cmd_chord_on {
-            return;
+    pub fn modifier_flags(&mut self, wid: &str, flags: u64) {
+        let cmd = self.cmd_chord.flags(flags);
+        let opt = self.opt_chord.flags(flags);
+        if cmd && self.cmd_chord_on {
+            self.cmd_chord_fire(wid);
         }
+        if opt && self.opt_chord_on {
+            self.open_agent(wid);
+        }
+    }
+
+    fn cmd_chord_fire(&mut self, wid: &str) {
         let sid = self.win(wid).and_then(|w| w.active_session()).map(String::from);
         let password = sid.and_then(|sid| self.sessions.get(&sid)).is_some_and(|s| s.pwd.active);
         let Some(w) = self.win(wid) else { return };
@@ -1160,6 +1191,104 @@ impl App {
         self.cmd_chord_on = on;
         crate::settings::set("command_to_black_magic", on);
         self.toast(wid, if on { "Left ⌘ + right ⌘ opens Black Magic: on" } else { "Left ⌘ + right ⌘ opens Black Magic: off" }, false);
+    }
+
+    /// A helper's name for `set-helper` and the settings: the plugin's name
+    /// (its `hello`), else its handler.
+    fn agent_name(&self, reg: &zenteru_term::api::Registration) -> String {
+        let n = self.api.as_ref().map(|a| a.conn_name(reg.conn)).unwrap_or_default();
+        if n.is_empty() { reg.handler.clone() } else { n }
+    }
+
+    /// The registered helper called `name` (plugin name, handler or title).
+    fn find_agent(&self, name: &str) -> Option<zenteru_term::api::Registration> {
+        let name = name.to_lowercase();
+        let regs = self.api.as_ref()?.registrations("agent");
+        regs.into_iter().find(|r| {
+            self.agent_name(r).to_lowercase() == name
+                || r.handler.to_lowercase() == name
+                || r.params.get("title").as_str().is_some_and(|t| t.to_lowercase() == name)
+        })
+    }
+
+    /// Which helper ⌥ + ⌥ opens: the default if it's running, else the one
+    /// used last, else hmxv, else none.
+    pub fn pick_agent(&self) -> Option<zenteru_term::api::Registration> {
+        [self.default_agent.as_deref(), self.recent_agent.as_deref(), Some("hmxv")]
+            .into_iter()
+            .flatten()
+            .find_map(|n| self.find_agent(n))
+    }
+
+    pub fn note_agent_used(&mut self, reg: &zenteru_term::api::Registration) {
+        let name = self.agent_name(reg);
+        if self.recent_agent.as_deref() != Some(name.as_str()) {
+            crate::settings::set("recent_agent", name.as_str());
+            self.recent_agent = Some(name);
+        }
+    }
+
+    /// Left ⌥ + right ⌥: open the agentic helper (`source: "open"`, empty
+    /// `text`; see docs/AGENTIC_HELPERS.md). With a side panel focused, it
+    /// goes back to the terminal instead. No helper: nothing happens.
+    pub fn open_agent(&mut self, wid: &str) {
+        let password = {
+            let sid = self.win(wid).and_then(|w| w.active_session()).map(String::from);
+            sid.and_then(|sid| self.sessions.get(&sid)).is_some_and(|s| s.pwd.active)
+        };
+        let Some(w) = self.win(wid) else { return };
+        if w.focus == Focus::Panel {
+            w.focus = Focus::Terminal;
+            w.dirty = true;
+            return;
+        }
+        if password || w.palette.is_some() {
+            return;
+        }
+        let Some(reg) = self.pick_agent() else { return };
+        let w = self.win(wid);
+        let tid = w.as_ref().and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
+        let sid = w.and_then(|w| w.active_session()).map(String::from);
+        let args = Json::obj().with("text", "").with("window_id", wid).with("tab_id", tid).with("session_id", sid).with("source", "open");
+        self.note_agent_used(&reg);
+        self.call_handler(&reg, args);
+    }
+
+    /// `@option-to-agent on | off | toggle | set-helper [NAME]` (no
+    /// argument: toggle; `set-helper` alone clears the default).
+    pub fn set_opt_chord(&mut self, wid: &str, arg: &str) {
+        let arg = arg.trim();
+        let (verb, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(v, r)| (v, r.trim()));
+        let on = match verb.to_lowercase().as_str() {
+            "on" | "true" | "1" => true,
+            "off" | "false" | "0" => false,
+            "" | "toggle" => !self.opt_chord_on,
+            "set-helper" => {
+                let msg = if rest.is_empty() || rest.eq_ignore_ascii_case("none") {
+                    self.default_agent = None;
+                    crate::settings::set("default_agent", Json::Null);
+                    "Default agentic helper cleared: recently used, then hmxv".to_string()
+                } else {
+                    let running = self.find_agent(rest).map(|r| self.agent_name(&r));
+                    let name = running.clone().unwrap_or_else(|| rest.to_string());
+                    crate::settings::set("default_agent", name.as_str());
+                    self.default_agent = Some(name.clone());
+                    match running {
+                        Some(_) => format!("Default agentic helper: {name}"),
+                        None => format!("Default agentic helper: {name} (not running now)"),
+                    }
+                };
+                self.toast(wid, &msg, false);
+                return;
+            }
+            other => {
+                self.toast(wid, &format!("option-to-agent: expected on, off, toggle or set-helper NAME, not {other:?}"), true);
+                return;
+            }
+        };
+        self.opt_chord_on = on;
+        crate::settings::set("option_to_agent", on);
+        self.toast(wid, if on { "Left ⌥ + right ⌥ opens the agentic helper: on" } else { "Left ⌥ + right ⌥ opens the agentic helper: off" }, false);
     }
 
     /// `@trim`: strip whitespace around the command line being typed. zsh
@@ -1654,6 +1783,7 @@ impl App {
                 }
             }
             "command_to_black_magic" => self.set_cmd_chord(wid, ""),
+            "option_to_agent" => self.set_opt_chord(wid, ""),
             "trim" => {
                 if let Some(sid) = self.win(wid).and_then(|w| w.active_session()).map(String::from) {
                     self.trim_line(&sid);
@@ -2824,6 +2954,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.clear", "Clear Scrollback", "clear"),
     ("zenteru.trim", "Trim spaces around the typed command", "trim"),
     ("zenteru.command_to_black_magic", "Both ⌘ keys open Black Magic: on | off | toggle", "command-to-black-magic"),
+    ("zenteru.option_to_agent", "Both ⌥ keys open the agentic helper: on | off | toggle | set-helper NAME", "option-to-agent"),
     ("zenteru.bigger", "Bigger Text", "bigger"),
     ("zenteru.smaller", "Smaller Text", "smaller"),
     ("zenteru.reset_font", "Reset Text Size", "reset-font"),

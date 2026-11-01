@@ -10,6 +10,7 @@ general terminal questions.
 | | |
 |---|---|
 | **hmxv: Toggle panel** (⌘⇧H) | show/hide the hmxv panel for the current window |
+| **Left ⌥ + right ⌥** | open the panel (hmxv is the fallback helper; `@option-to-agent set-helper NAME` picks another) |
 | **hmxv: Help me exit** | one-shot: hmxv reads the screen, identifies the program and gets you back to the shell prompt |
 
 Type in the panel to chat. Slash commands:

@@ -294,13 +294,19 @@ class Command(_Registration):
 
 @dataclass
 class AgentRequest:
-    """Context for an agentic helper call: the line plus where it was typed."""
+    """Context for an agentic helper call: the line plus where it was typed.
+
+    ``source`` is ``"black_magic"`` for a line typed after ``@``, or
+    ``"open"`` when the user asked for the helper itself (left ⌥ + right ⌥),
+    with an empty ``text``.
+    """
 
     connection: "Connection"
     text: str
     session_id: Optional[str]
     window_id: Optional[str]
     tab_id: Optional[str]
+    source: str = "black_magic"
 
 
 #: An agentic helper is a Consumer<String>: a coroutine taking the line.
@@ -315,20 +321,43 @@ class AgentHelper(_Registration):
     handed to the helper with the highest ``priority``::
 
         async def ask(line: str) -> None: ...
-        await zenteru.AgentHelper(ask).async_register(connection)
+        async def show(req: zenteru.AgentRequest) -> None: ...   # open your UI
+        await zenteru.AgentHelper(ask, on_open=show).async_register(connection)
 
-    The call returns immediately; ``handler`` runs in the background.
+    ``on_open`` runs when the user asks for the helper itself (left ⌥ +
+    right ⌥, ``source: "open"``); without it those requests are ignored, so
+    ``handler`` never sees an empty line. Both return immediately and run in
+    the background. See docs/AGENTIC_HELPERS.md.
     """
 
     kind = "agent"
 
-    def __init__(self, handler: AgentHandler, identifier: Optional[str] = None, title: Optional[str] = None, priority: int = 0) -> None:
+    def __init__(
+        self,
+        handler: AgentHandler,
+        identifier: Optional[str] = None,
+        title: Optional[str] = None,
+        priority: int = 0,
+        on_open: Optional[Callable[["AgentRequest"], Awaitable[Any]]] = None,
+    ) -> None:
         super().__init__(identifier or "agent", title, extra={"priority": int(priority)})
         self.handler = handler
+        self.on_open = on_open
 
     async def _invoke(self, args: dict) -> None:
         assert self.connection is not None
-        req = AgentRequest(self.connection, str(args.get("text") or ""), args.get("session_id"), args.get("window_id"), args.get("tab_id"))
+        req = AgentRequest(
+            self.connection,
+            str(args.get("text") or ""),
+            args.get("session_id"),
+            args.get("window_id"),
+            args.get("tab_id"),
+            str(args.get("source") or "black_magic"),
+        )
+        if req.source == "open":
+            if self.on_open is not None:
+                self.connection.spawn(self.on_open(req))
+            return None
         try:
             n = len(inspect.signature(self.handler).parameters)
         except (TypeError, ValueError):
@@ -337,9 +366,15 @@ class AgentHelper(_Registration):
         return None
 
 
-async def async_register_agent(connection: "Connection", handler: AgentHandler, identifier: Optional[str] = None, priority: int = 0) -> AgentHelper:
+async def async_register_agent(
+    connection: "Connection",
+    handler: AgentHandler,
+    identifier: Optional[str] = None,
+    priority: int = 0,
+    on_open: Optional[Callable[["AgentRequest"], Awaitable[Any]]] = None,
+) -> AgentHelper:
     """Register ``handler`` (a coroutine taking the line) as an agentic helper."""
-    helper = AgentHelper(handler, identifier, priority=priority)
+    helper = AgentHelper(handler, identifier, priority=priority, on_open=on_open)
     await helper.async_register(connection)
     return helper
 

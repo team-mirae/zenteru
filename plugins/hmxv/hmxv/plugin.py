@@ -137,6 +137,10 @@ class HmxvApp:
         return None
 
     async def _agent_line(self, args: dict):
+        if args.get("source") == "open":
+            # Left ⌥ + right ⌥: show (and focus) the panel, nothing asked.
+            self._spawn(self.show_panel(args.get("window_id")))
+            return None
         text = str(args.get("text") or "").strip()
         if text:
             self._spawn(self.ask(args.get("window_id"), text, args.get("session_id")))

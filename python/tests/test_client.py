@@ -313,6 +313,47 @@ class RegistrationTests(ServerTestCase):
         session = await got[0].async_get_session()
         self.assertEqual(session.session_id, "s1")
 
+    async def test_agent_helper_lines_and_open(self) -> None:
+        lines: list[tuple[str, str]] = []
+        opened: list[zenteru.AgentRequest] = []
+        done = asyncio.Event()
+
+        async def ask(line: str, req: zenteru.AgentRequest) -> None:
+            lines.append((line, req.source))
+            done.set()
+
+        async def show(req: zenteru.AgentRequest) -> None:
+            opened.append(req)
+            done.set()
+
+        await zenteru.AgentHelper(ask, "t.agent", title="T", priority=5, on_open=show).async_register(self.conn)
+        reg = self.server.registrations["t.agent"]
+        self.assertEqual((reg["kind"], reg["priority"]), ("agent", 5))
+        ctx = {"session_id": "s1", "window_id": "w1", "tab_id": "t1"}
+        self.assertIsNone(await self.server.invoke("t.agent", {**ctx, "text": "why?", "source": "black_magic"}))
+        await asyncio.wait_for(done.wait(), 2)
+        done.clear()
+        self.assertIsNone(await self.server.invoke("t.agent", {**ctx, "text": "", "source": "open"}))
+        await asyncio.wait_for(done.wait(), 2)
+        self.assertEqual(lines, [("why?", "black_magic")])
+        self.assertEqual((opened[0].source, opened[0].window_id, opened[0].text), ("open", "w1", ""))
+
+    def test_screen_line_password_flag(self) -> None:
+        sc = zenteru.ScreenContents({"lines": [{"text": "Password:", "password": True}, {"text": "ok"}]})
+        self.assertEqual([l.password for l in sc.lines], [True, False])
+
+    async def test_agent_helper_without_on_open_ignores_open(self) -> None:
+        lines: list[str] = []
+
+        async def ask(line: str) -> None:
+            lines.append(line)
+
+        await zenteru.AgentHelper(ask, "t.agent2").async_register(self.conn)
+        await self.server.invoke("t.agent2", {"text": "", "source": "open"})
+        await self.server.invoke("t.agent2", {"text": "hi"})
+        await asyncio.sleep(0.05)
+        self.assertEqual(lines, ["hi"])
+
     async def test_drop_handler(self) -> None:
         async def handler(ev: zenteru.DropEvent):
             if ev.items[0].kind == "file":

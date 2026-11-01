@@ -557,7 +557,7 @@ class MockServer:
         return {}
 
     def m_rpc_register(self, c: _Client, p: dict) -> dict:
-        if p["kind"] not in ("command", "drop_handler", "title_provider", "function"):
+        if p["kind"] not in ("command", "agent", "drop_handler", "title_provider", "function"):
             raise MockError("bad_request", f"bad kind {p['kind']}")
         self.registrations[p["handler"]] = dict(p, client=c)
         return {}

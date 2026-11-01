@@ -49,6 +49,13 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   once). It's on by default; turn it off with
   `@command-to-black-magic off` (`on`, or `toggle` with no argument) or
   View → Left ⌘ + Right ⌘ Opens Black Magic.
+- **Agentic helpers.** Left ⌥ + right ⌥ (held together, then released)
+  opens your agentic helper: the default you set with
+  `@option-to-agent set-helper NAME`, else the one you used last, else
+  hmxv. Pressed with a side panel focused, it goes back to the terminal.
+  `@option-to-agent on|off|toggle` and a View menu item switch it (on by
+  default). Build your own helper with
+  [docs/AGENTIC_HELPERS.md](docs/AGENTIC_HELPERS.md).
 - **Line references.** In shell mode a gutter shows ゼロ, -1, -2 … counting
   up from the cursor's line, plus a 3-character code per line taken from a
   UUIDv7 stamped when the line arrived. You can cite either one to hmxv or

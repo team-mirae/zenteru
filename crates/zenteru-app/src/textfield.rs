@@ -80,11 +80,67 @@ impl Panel {
         self.anchor = Some(char_of_g[r.start.min(gs.len())]);
         self.cursor = char_of_g[r.end.min(gs.len())];
     }
+
+    // -- scratchpad pads ----------------------------------------------------
+
+    pub fn is_scratchpad(&self) -> bool {
+        !self.pads.is_empty()
+    }
+
+    /// Focus pad `i`: park the current pad's state, load `i`'s.
+    pub fn focus_pad(&mut self, i: usize) {
+        if i >= self.pads.len() || i == self.pad {
+            return;
+        }
+        let old = &mut self.pads[self.pad];
+        old.text = std::mem::take(&mut self.input);
+        old.cursor = self.cursor;
+        old.anchor = self.anchor.take();
+        self.preedit.clear();
+        self.pad = i;
+        let new = &mut self.pads[i];
+        self.input = std::mem::take(&mut new.text);
+        self.cursor = new.cursor;
+        self.anchor = new.anchor;
+        self.input_secret = new.secret;
+        new.follow.set(true);
+    }
+
+    /// (text, caret, anchor) of pad `i`, wherever it is kept.
+    pub fn pad_view(&self, i: usize) -> (&str, usize, Option<usize>) {
+        if i == self.pad {
+            (&self.input, self.cursor, self.anchor)
+        } else {
+            let p = &self.pads[i];
+            (&p.text, p.cursor, p.anchor)
+        }
+    }
+
+    /// Pad `i`'s whole text, or its selection.
+    pub fn pad_text(&self, i: usize, all: bool) -> Option<String> {
+        let (text, cursor, anchor) = self.pad_view(i);
+        if all {
+            return Some(text.to_string());
+        }
+        let a = anchor.filter(|a| *a != cursor)?;
+        let (a, b) = (a.min(cursor), a.max(cursor));
+        Some(text.chars().skip(a).take(b - a).collect())
+    }
+
+    /// Char index of the start / end of the caret's line (`\n`-separated).
+    pub fn line_bounds(&self) -> (usize, usize) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let at = self.cursor.min(chars.len());
+        let start = chars[..at].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
+        let end = chars[at..].iter().position(|c| *c == '\n').map_or(chars.len(), |i| at + i);
+        (start, end)
+    }
 }
 
 /// Hard-wrap `text` to `width` cells without dropping any characters, so
 /// screen positions map back to char indices. Returns (first char index,
-/// line text) per line; always at least one line.
+/// line text) per line; always at least one line. A `\n` ends its line
+/// (it is not part of any line's text but still counts as a char).
 pub fn layout(text: &str, width: usize) -> Vec<(usize, String)> {
     let width = width.max(2);
     let mut out = Vec::new();
@@ -93,6 +149,13 @@ pub fn layout(text: &str, width: usize) -> Vec<(usize, String)> {
     let mut col = 0usize;
     let mut ci = 0usize;
     for g in zenteru_text::seg::graphemes(text) {
+        if g == "\n" || g == "\r\n" {
+            ci += g.chars().count();
+            out.push((start, std::mem::take(&mut line)));
+            start = ci;
+            col = 0;
+            continue;
+        }
         let w = grapheme_width(g, col).max(1);
         if col + w > width && !line.is_empty() {
             out.push((start, std::mem::take(&mut line)));
@@ -155,5 +218,17 @@ mod tests {
         assert_eq!(char_at(&l, 0, 5.4), 5, "left half of 한");
         assert_eq!(char_at(&l, 0, 6.6), 6, "right half of 한");
         assert_eq!(position_of(&l, 6), (1, 0));
+    }
+
+    #[test]
+    fn layout_breaks_on_newlines() {
+        let l = layout("ab\n\ncd", 10);
+        assert_eq!(l, vec![(0, "ab".to_string()), (3, String::new()), (4, "cd".to_string())]);
+        assert_eq!(char_at(&l, 0, 9.0), 2, "end of a line is before its newline");
+        assert_eq!(char_at(&l, 1, 3.0), 3);
+        assert_eq!(position_of(&l, 2), (0, 2));
+        assert_eq!(position_of(&l, 3), (1, 0));
+        assert_eq!(position_of(&l, 6), (2, 2));
+        assert_eq!(layout("x\n", 10), vec![(0, "x".to_string()), (2, String::new())]);
     }
 }

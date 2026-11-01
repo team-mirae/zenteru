@@ -202,11 +202,12 @@ Kinds:
 
 ### panels (side UI)
 Panels are a column docked to the right of a window, rendered by zenteru in
-the same Metal grid as the terminal. One chat-style kind for now.
+the same Metal grid as the terminal. Two kinds: `chat` (a transcript with
+an input box, the default) and `scratchpad` (see below).
 
 | method | params | result |
 |---|---|---|
-| `panel.create` | `{title, window_id?, modes?: [str], mode?}` | `{panel_id}` |
+| `panel.create` | `{title, window_id?, modes?: [str], mode?, kind?: "chat"\|"scratchpad", pads?: [{label, secret?}]}` | `{panel_id}` |
 | `panel.show` / `panel.hide` / `panel.toggle` | `{panel_id}` | `{}` |
 | `panel.append` | `{panel_id, role: "user"|"assistant"|"tool"|"system", text?, actions?: [{id, label}], blocks?: [Block]}` | `{message_id}` |
 | `panel.update` | `{panel_id, message_id, text?, actions?, blocks?}` | `{}` (streaming, in-place previews) |
@@ -214,7 +215,7 @@ the same Metal grid as the terminal. One chat-style kind for now.
 | `panel.clear` | `{panel_id}` | `{}` |
 | `panel.set_status` | `{panel_id, text}` | `{}` |
 | `panel.set_mode` | `{panel_id, mode}` | `{}` |
-| `panel.set_input` | `{panel_id, text, secret?: bool}` | `{}` — prefill the input box; `secret` masks it as gradient ● until submitted (setenvvar values, tokens) |
+| `panel.set_input` | `{panel_id, text, secret?: bool, pad?: int}` | `{}` — prefill the input box; `secret` masks it as gradient ● until submitted (setenvvar values, tokens). On a scratchpad: replace pad `pad`'s text (default the focused pad) and focus it |
 | `panel.destroy` | `{panel_id}` | `{}` |
 
 Rich content: `blocks` (after `text`) may hold
@@ -228,6 +229,16 @@ Rich content: `blocks` (after `text`) may hold
 Images are decoded by macOS (PNG, JPEG, GIF, HEIC, TIFF, WebP, PDF …, up to
 64 MiB / 8192 px a side), scaled to fit the panel and drawn by the GPU. A
 block that can't be read or decoded fails the call with `bad_request`.
+
+**Scratchpads** (`kind: "scratchpad"`) show no transcript or input box:
+`pads` (1–4, default `[{label:"Plaintext"}, {label:"Secrets", secret:true}]`)
+are stacked multi-line text areas, each with **Append all to terminal** and
+**Append selection to terminal** buttons. zenteru handles those itself: the
+text goes to the focused tab's command line as a paste (bracketed when the
+program asked for it, so nothing runs), without Enter; into a password
+field, only the first line is typed. Enter in a pad is a newline, ⇥ / ⇧⇥
+move between pads, ↑/↓ move by line. A `secret` pad is drawn as ●, ⌘C / ⌘X
+never copy it, and its text is never sent to plugins. Pads emit no events.
 
 Panel events arrive on subscription kind `panel` (`notify.subscribe {kind:"panel"}`):
 `{panel_id, type: "input", text}` · `{panel_id, type: "mode", mode}` ·

@@ -10,7 +10,7 @@ use zenteru_term::cell::{Color, flags};
 use zenteru_text::palette::{self as pal, Rgb};
 use zenteru_text::text::{grapheme_width, str_width};
 
-use crate::app::{App, Focus, Hits, Layout, TRAFFIC_LIGHTS_PT};
+use crate::app::{App, Focus, Hits, Layout, PadHit, Panel, TRAFFIC_LIGHTS_PT};
 use crate::font::Style;
 use crate::render::{Frame, Grad, Rgba, rgba};
 
@@ -601,197 +601,201 @@ pub fn draw(app: &mut App, wid: &str) {
                 y += ch + 4.0 * s;
             }
             let header_bottom = y;
-            // Input box at the bottom: a real text field (textfield.rs).
-            let shown_input = if p.input_secret { "●".repeat(p.input.chars().count()) } else { p.input.clone() };
-            let field_cells = inner_cells.saturating_sub(2);
-            // With IME composition in progress, show it inline at the caret.
-            let display = if p.preedit.is_empty() {
-                shown_input.clone()
+            if p.is_scratchpad() {
+                draw_pads(renderer, &mut f, &mut hits, p, &l, header_bottom, win.focus == Focus::Panel && win.handle.is_key(), scale);
             } else {
-                let mut t = shown_input.clone();
-                t.insert_str(crate::app::byte_at(&t, p.cursor), &p.preedit);
-                t
-            };
-            let laid = crate::textfield::layout(&display, field_cells);
-            let input_lines = laid.len().clamp(1, 6);
-            let ih = input_lines as f32 * ch + 10.0 * s;
-            let iy = l.h - ih - pad;
-            let focused = win.focus == Focus::Panel && win.handle.is_key();
-            f.round_rect(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, c(pal::BG));
-            if focused || p.input_secret {
-                f.gradient_border(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, if p.input_secret { 2.0 * s } else { 1.5 * s }, c(pal::GRADIENT_FROM), grad_to());
-            } else {
-                f.gradient_border(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, 1.0 * s, c(pal::MUTED), c(pal::MUTED));
-            }
-            hits.panel_input = [px, iy, pw, ih];
-            let text_y = iy + 5.0 * s;
-            let input_x = inner_x + cw * 0.5;
-            if p.input.is_empty() && p.preedit.is_empty() {
-                let ph = if p.input_secret { "hidden input — Enter to submit" } else { "message · Enter to send · Esc → terminal" };
-                renderer.text(&mut f, ph, input_x, text_y, rgba(pal::LABEL, 0.6), Style::Italic, inner_cells - 1, None, scale);
-            }
-            {
-                // Keep the caret's line in view.
-                let caret_at = p.cursor + p.preedit.chars().count();
-                let (caret_line, caret_col) = crate::textfield::position_of(&laid, caret_at);
-                let first = caret_line.saturating_sub(input_lines - 1).min(laid.len().saturating_sub(input_lines));
-                let sel = if p.preedit.is_empty() { p.selection() } else { None };
-                let g = Grad { x0: input_x, x1: input_x + inner_cells as f32 * cw, to: grad_to() };
-                for (k, (lstart, line)) in laid.iter().enumerate().skip(first).take(input_lines) {
-                    let ly = text_y + (k - first) as f32 * ch;
-                    if let Some((a, b)) = sel {
-                        let n = line.chars().count();
-                        let (la, lb) = (a.max(*lstart), b.min(lstart + n));
-                        if la < lb {
-                            let pre: String = line.chars().take(la - lstart).collect();
-                            let mid: String = line.chars().skip(la - lstart).take(lb - la).collect();
-                            let sx = input_x + str_width(&pre) as f32 * cw;
-                            f.rect(sx, ly, (str_width(&mid) as f32 * cw).max(cw * 0.5), ch, c(pal::SELECT_BG));
-                        }
-                    }
-                    if p.input_secret {
-                        renderer.text(&mut f, line, input_x, ly, c(pal::GRADIENT_FROM), Style::Bold, inner_cells, Some(g), scale);
-                    } else {
-                        renderer.text(&mut f, line, input_x, ly, c(pal::FG), Style::Regular, inner_cells, None, scale);
-                    }
-                }
-                let (kx, ky) = (input_x + caret_col as f32 * cw, text_y + (caret_line - first) as f32 * ch);
-                if focused {
-                    f.rect(kx, ky, 2.0 * s, ch, c(pal::CURSOR));
-                    hits_ime(&mut hits, kx, ky, cw, ch);
-                }
-                if !p.preedit.is_empty() {
-                    let pw_cells = str_width(&p.preedit) as f32;
-                    f.gradient_rect(kx - pw_cells * cw, ky + ch - 2.0 * s, (pw_cells * cw).max(cw), 2.0 * s, 0.0, c(pal::GRADIENT_FROM), grad_to());
-                }
-                hits.panel_lines = if p.preedit.is_empty() { laid.clone() } else { crate::textfield::layout(&shown_input, field_cells) };
-                hits.panel_first_line = first;
-                hits.panel_text_origin = (input_x, text_y);
-            }
-            // Messages, bottom-up, as rows: text (styled), code, images,
-            // progress bars, dividers and action buttons (blocks.rs).
-            enum PRow {
-                Text(Rgba, Style, String, Option<Grad>, bool),
-                Actions(u64, Vec<(String, String)>),
-                Image(crate::blocks::Image, u32, u32, String),
-                ImageCont,
-                Progress(f32, String),
-                Divider,
-                Blank,
-            }
-            use crate::blocks::{Block, TextColor};
-            let avail_rows = ((iy - 6.0 * s - header_bottom) / ch).max(0.0) as usize;
-            let max_img_w = inner_cells as f32 * cw;
-            let max_img_h = (avail_rows as f32 * ch * 0.85).max(ch);
-            let mut rows: Vec<PRow> = Vec::new();
-            for m in &p.messages {
-                let (label, color) = match m.role.as_str() {
-                    "user" => ("you", pal::ACCENT_MINT),
-                    "assistant" => (p.title.as_str(), pal::GRADIENT_FROM),
-                    "tool" => ("tool", pal::ACCENT_GOLD),
-                    _ => ("·", pal::MUTED),
+                // Input box at the bottom: a real text field (textfield.rs).
+                let shown_input = if p.input_secret { "●".repeat(p.input.chars().count()) } else { p.input.clone() };
+                let field_cells = inner_cells.saturating_sub(2);
+                // With IME composition in progress, show it inline at the caret.
+                let display = if p.preedit.is_empty() {
+                    shown_input.clone()
+                } else {
+                    let mut t = shown_input.clone();
+                    t.insert_str(crate::app::byte_at(&t, p.cursor), &p.preedit);
+                    t
                 };
-                rows.push(PRow::Text(c(color), Style::Bold, label.to_string(), None, false));
-                let body_color = if m.role == "tool" || m.role == "system" { c(pal::LABEL) } else { c(pal::FG) };
-                if !m.text.is_empty() || m.blocks.is_empty() {
-                    for wl in wrap(&m.text, inner_cells) {
-                        rows.push(PRow::Text(body_color, Style::Regular, wl, None, false));
-                    }
+                let laid = crate::textfield::layout(&display, field_cells);
+                let input_lines = laid.len().clamp(1, 6);
+                let ih = input_lines as f32 * ch + 10.0 * s;
+                let iy = l.h - ih - pad;
+                let focused = win.focus == Focus::Panel && win.handle.is_key();
+                f.round_rect(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, c(pal::BG));
+                if focused || p.input_secret {
+                    f.gradient_border(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, if p.input_secret { 2.0 * s } else { 1.5 * s }, c(pal::GRADIENT_FROM), grad_to());
+                } else {
+                    f.gradient_border(px + pad - 4.0 * s, iy, pw - 2.0 * pad + 8.0 * s, ih, 8.0 * s, 1.0 * s, c(pal::MUTED), c(pal::MUTED));
                 }
-                for b in &m.blocks {
-                    match b {
-                        Block::Text { text, color, bold, italic } => {
-                            let style = Style::from(*bold, *italic);
-                            let (col, grad) = match color {
-                                TextColor::Default => (body_color, None),
-                                TextColor::Muted => (c(pal::MUTED), None),
-                                TextColor::Rgb(rgb) => (c(*rgb), None),
-                                TextColor::Gradient => (c(pal::GRADIENT_FROM), Some(Grad { x0: inner_x, x1: inner_x + inner_cells as f32 * cw, to: grad_to() })),
-                            };
-                            for wl in wrap(text, inner_cells) {
-                                rows.push(PRow::Text(col, style, wl, grad, false));
+                hits.panel_input = [px, iy, pw, ih];
+                let text_y = iy + 5.0 * s;
+                let input_x = inner_x + cw * 0.5;
+                if p.input.is_empty() && p.preedit.is_empty() {
+                    let ph = if p.input_secret { "hidden input — Enter to submit" } else { "message · Enter to send · Esc → terminal" };
+                    renderer.text(&mut f, ph, input_x, text_y, rgba(pal::LABEL, 0.6), Style::Italic, inner_cells - 1, None, scale);
+                }
+                {
+                    // Keep the caret's line in view.
+                    let caret_at = p.cursor + p.preedit.chars().count();
+                    let (caret_line, caret_col) = crate::textfield::position_of(&laid, caret_at);
+                    let first = caret_line.saturating_sub(input_lines - 1).min(laid.len().saturating_sub(input_lines));
+                    let sel = if p.preedit.is_empty() { p.selection() } else { None };
+                    let g = Grad { x0: input_x, x1: input_x + inner_cells as f32 * cw, to: grad_to() };
+                    for (k, (lstart, line)) in laid.iter().enumerate().skip(first).take(input_lines) {
+                        let ly = text_y + (k - first) as f32 * ch;
+                        if let Some((a, b)) = sel {
+                            let n = line.chars().count();
+                            let (la, lb) = (a.max(*lstart), b.min(lstart + n));
+                            if la < lb {
+                                let pre: String = line.chars().take(la - lstart).collect();
+                                let mid: String = line.chars().skip(la - lstart).take(lb - la).collect();
+                                let sx = input_x + str_width(&pre) as f32 * cw;
+                                f.rect(sx, ly, (str_width(&mid) as f32 * cw).max(cw * 0.5), ch, c(pal::SELECT_BG));
                             }
                         }
-                        Block::Code { text } => {
-                            for wl in wrap(text, inner_cells.saturating_sub(2)) {
-                                rows.push(PRow::Text(c(pal::FG), Style::Regular, wl, None, true));
-                            }
-                        }
-                        Block::Image(img) => {
-                            let mw = img.max_cells.map_or(max_img_w, |mc| (mc as f32 * cw).min(max_img_w));
-                            let mh = img.max_rows.map_or(max_img_h, |mr| (mr as f32 * ch).min(max_img_h));
-                            let k = (mw / img.w as f32).min(mh / img.h as f32).min(1.0);
-                            let (dw, dh) = ((img.w as f32 * k).max(1.0) as u32, (img.h as f32 * k).max(1.0) as u32);
-                            let n = ((dh as f32 + 4.0 * s) / ch).ceil().max(1.0) as usize;
-                            rows.push(PRow::Image(img.clone(), dw, dh, img.alt.clone()));
-                            for _ in 1..n {
-                                rows.push(PRow::ImageCont);
-                            }
-                        }
-                        Block::Progress { value, label } => rows.push(PRow::Progress(*value, label.clone())),
-                        Block::Divider => rows.push(PRow::Divider),
-                    }
-                }
-                if !m.actions.is_empty() {
-                    rows.push(PRow::Actions(m.id, m.actions.clone()));
-                }
-                rows.push(PRow::Blank);
-            }
-            let end = rows.len().saturating_sub(p.scroll.min(rows.len().saturating_sub(avail_rows)));
-            let begin = end.saturating_sub(avail_rows);
-            // An image cut off at the top: say what it is instead.
-            let mut first_cut = begin < rows.len() && matches!(rows.get(begin), Some(PRow::ImageCont));
-            for (k, row) in rows[begin..end].iter().enumerate() {
-                let ly = header_bottom + k as f32 * ch;
-                match row {
-                    PRow::Text(color, style, text, grad, code) => {
-                        if *code {
-                            f.rect(inner_x - 2.0 * s, ly, inner_cells as f32 * cw + 4.0 * s, ch, c(pal::BG));
-                            renderer.text(&mut f, text, inner_x + cw, ly, *color, *style, inner_cells, None, scale);
+                        if p.input_secret {
+                            renderer.text(&mut f, line, input_x, ly, c(pal::GRADIENT_FROM), Style::Bold, inner_cells, Some(g), scale);
                         } else {
-                            renderer.text(&mut f, text, inner_x, ly, *color, *style, inner_cells, *grad, scale);
+                            renderer.text(&mut f, line, input_x, ly, c(pal::FG), Style::Regular, inner_cells, None, scale);
                         }
                     }
-                    PRow::Actions(mid, acts) => {
-                        let mut ax = inner_x;
-                        for (aid, label) in acts {
-                            let wc = str_width(label) + 2;
-                            let w = wc as f32 * cw;
-                            f.gradient_rect(ax, ly, w, ch, 6.0 * s, rgba(pal::GRADIENT_FROM, 0.9), rgba(pal::GRADIENT_TO, 0.9));
-                            renderer.text(&mut f, label, ax + cw, ly, c(pal::ON_GRADIENT), Style::Bold, wc, None, scale);
-                            hits.actions.push((p.id.clone(), *mid, aid.clone(), [ax, ly, w, ch]));
-                            ax += w + 6.0 * s;
+                    let (kx, ky) = (input_x + caret_col as f32 * cw, text_y + (caret_line - first) as f32 * ch);
+                    if focused {
+                        f.rect(kx, ky, 2.0 * s, ch, c(pal::CURSOR));
+                        hits_ime(&mut hits, kx, ky, cw, ch);
+                    }
+                    if !p.preedit.is_empty() {
+                        let pw_cells = str_width(&p.preedit) as f32;
+                        f.gradient_rect(kx - pw_cells * cw, ky + ch - 2.0 * s, (pw_cells * cw).max(cw), 2.0 * s, 0.0, c(pal::GRADIENT_FROM), grad_to());
+                    }
+                    hits.panel_lines = if p.preedit.is_empty() { laid.clone() } else { crate::textfield::layout(&shown_input, field_cells) };
+                    hits.panel_first_line = first;
+                    hits.panel_text_origin = (input_x, text_y);
+                }
+                // Messages, bottom-up, as rows: text (styled), code, images,
+                // progress bars, dividers and action buttons (blocks.rs).
+                enum PRow {
+                    Text(Rgba, Style, String, Option<Grad>, bool),
+                    Actions(u64, Vec<(String, String)>),
+                    Image(crate::blocks::Image, u32, u32, String),
+                    ImageCont,
+                    Progress(f32, String),
+                    Divider,
+                    Blank,
+                }
+                use crate::blocks::{Block, TextColor};
+                let avail_rows = ((iy - 6.0 * s - header_bottom) / ch).max(0.0) as usize;
+                let max_img_w = inner_cells as f32 * cw;
+                let max_img_h = (avail_rows as f32 * ch * 0.85).max(ch);
+                let mut rows: Vec<PRow> = Vec::new();
+                for m in &p.messages {
+                    let (label, color) = match m.role.as_str() {
+                        "user" => ("you", pal::ACCENT_MINT),
+                        "assistant" => (p.title.as_str(), pal::GRADIENT_FROM),
+                        "tool" => ("tool", pal::ACCENT_GOLD),
+                        _ => ("·", pal::MUTED),
+                    };
+                    rows.push(PRow::Text(c(color), Style::Bold, label.to_string(), None, false));
+                    let body_color = if m.role == "tool" || m.role == "system" { c(pal::LABEL) } else { c(pal::FG) };
+                    if !m.text.is_empty() || m.blocks.is_empty() {
+                        for wl in wrap(&m.text, inner_cells) {
+                            rows.push(PRow::Text(body_color, Style::Regular, wl, None, false));
                         }
                     }
-                    PRow::Image(img, dw, dh, _) => {
-                        let fits = ly + *dh as f32 <= iy - 4.0 * s;
-                        if fits {
-                            renderer.push_image(&mut f, img.key, &img.cg, inner_x, ly + 2.0 * s, *dw, *dh);
-                        } else {
-                            renderer.text(&mut f, &format!("▣ {} ↓", img.alt), inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                    for b in &m.blocks {
+                        match b {
+                            Block::Text { text, color, bold, italic } => {
+                                let style = Style::from(*bold, *italic);
+                                let (col, grad) = match color {
+                                    TextColor::Default => (body_color, None),
+                                    TextColor::Muted => (c(pal::MUTED), None),
+                                    TextColor::Rgb(rgb) => (c(*rgb), None),
+                                    TextColor::Gradient => (c(pal::GRADIENT_FROM), Some(Grad { x0: inner_x, x1: inner_x + inner_cells as f32 * cw, to: grad_to() })),
+                                };
+                                for wl in wrap(text, inner_cells) {
+                                    rows.push(PRow::Text(col, style, wl, grad, false));
+                                }
+                            }
+                            Block::Code { text } => {
+                                for wl in wrap(text, inner_cells.saturating_sub(2)) {
+                                    rows.push(PRow::Text(c(pal::FG), Style::Regular, wl, None, true));
+                                }
+                            }
+                            Block::Image(img) => {
+                                let mw = img.max_cells.map_or(max_img_w, |mc| (mc as f32 * cw).min(max_img_w));
+                                let mh = img.max_rows.map_or(max_img_h, |mr| (mr as f32 * ch).min(max_img_h));
+                                let k = (mw / img.w as f32).min(mh / img.h as f32).min(1.0);
+                                let (dw, dh) = ((img.w as f32 * k).max(1.0) as u32, (img.h as f32 * k).max(1.0) as u32);
+                                let n = ((dh as f32 + 4.0 * s) / ch).ceil().max(1.0) as usize;
+                                rows.push(PRow::Image(img.clone(), dw, dh, img.alt.clone()));
+                                for _ in 1..n {
+                                    rows.push(PRow::ImageCont);
+                                }
+                            }
+                            Block::Progress { value, label } => rows.push(PRow::Progress(*value, label.clone())),
+                            Block::Divider => rows.push(PRow::Divider),
                         }
                     }
-                    PRow::ImageCont => {
-                        if first_cut {
-                            first_cut = false;
-                            renderer.text(&mut f, "▣ image ↑", inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                    if !m.actions.is_empty() {
+                        rows.push(PRow::Actions(m.id, m.actions.clone()));
+                    }
+                    rows.push(PRow::Blank);
+                }
+                let end = rows.len().saturating_sub(p.scroll.min(rows.len().saturating_sub(avail_rows)));
+                let begin = end.saturating_sub(avail_rows);
+                // An image cut off at the top: say what it is instead.
+                let mut first_cut = begin < rows.len() && matches!(rows.get(begin), Some(PRow::ImageCont));
+                for (k, row) in rows[begin..end].iter().enumerate() {
+                    let ly = header_bottom + k as f32 * ch;
+                    match row {
+                        PRow::Text(color, style, text, grad, code) => {
+                            if *code {
+                                f.rect(inner_x - 2.0 * s, ly, inner_cells as f32 * cw + 4.0 * s, ch, c(pal::BG));
+                                renderer.text(&mut f, text, inner_x + cw, ly, *color, *style, inner_cells, None, scale);
+                            } else {
+                                renderer.text(&mut f, text, inner_x, ly, *color, *style, inner_cells, *grad, scale);
+                            }
                         }
-                    }
-                    PRow::Progress(v, label) => {
-                        let bw = inner_cells as f32 * cw * 0.6;
-                        let bh = (ch * 0.45).round();
-                        let by = ly + (ch - bh) / 2.0;
-                        f.round_rect(inner_x, by, bw, bh, bh / 2.0, c(pal::CUR_LINE_BG));
-                        if *v > 0.0 {
-                            f.gradient_rect(inner_x, by, (bw * v).max(bh), bh, bh / 2.0, c(pal::GRADIENT_FROM), grad_to());
+                        PRow::Actions(mid, acts) => {
+                            let mut ax = inner_x;
+                            for (aid, label) in acts {
+                                let wc = str_width(label) + 2;
+                                let w = wc as f32 * cw;
+                                f.gradient_rect(ax, ly, w, ch, 6.0 * s, rgba(pal::GRADIENT_FROM, 0.9), rgba(pal::GRADIENT_TO, 0.9));
+                                renderer.text(&mut f, label, ax + cw, ly, c(pal::ON_GRADIENT), Style::Bold, wc, None, scale);
+                                hits.actions.push((p.id.clone(), *mid, aid.clone(), [ax, ly, w, ch]));
+                                ax += w + 6.0 * s;
+                            }
                         }
-                        let text = if label.is_empty() { format!("{:.0}%", v * 100.0) } else { format!("{label} · {:.0}%", v * 100.0) };
-                        renderer.text(&mut f, &text, inner_x + bw + cw, ly, c(pal::LABEL), Style::Regular, inner_cells.saturating_sub((bw / cw) as usize + 1), None, scale);
+                        PRow::Image(img, dw, dh, _) => {
+                            let fits = ly + *dh as f32 <= iy - 4.0 * s;
+                            if fits {
+                                renderer.push_image(&mut f, img.key, &img.cg, inner_x, ly + 2.0 * s, *dw, *dh);
+                            } else {
+                                renderer.text(&mut f, &format!("▣ {} ↓", img.alt), inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                            }
+                        }
+                        PRow::ImageCont => {
+                            if first_cut {
+                                first_cut = false;
+                                renderer.text(&mut f, "▣ image ↑", inner_x, ly, c(pal::MUTED), Style::Italic, inner_cells, None, scale);
+                            }
+                        }
+                        PRow::Progress(v, label) => {
+                            let bw = inner_cells as f32 * cw * 0.6;
+                            let bh = (ch * 0.45).round();
+                            let by = ly + (ch - bh) / 2.0;
+                            f.round_rect(inner_x, by, bw, bh, bh / 2.0, c(pal::CUR_LINE_BG));
+                            if *v > 0.0 {
+                                f.gradient_rect(inner_x, by, (bw * v).max(bh), bh, bh / 2.0, c(pal::GRADIENT_FROM), grad_to());
+                            }
+                            let text = if label.is_empty() { format!("{:.0}%", v * 100.0) } else { format!("{label} · {:.0}%", v * 100.0) };
+                            renderer.text(&mut f, &text, inner_x + bw + cw, ly, c(pal::LABEL), Style::Regular, inner_cells.saturating_sub((bw / cw) as usize + 1), None, scale);
+                        }
+                        PRow::Divider => {
+                            f.gradient_rect(inner_x, ly + ch / 2.0, inner_cells as f32 * cw, 1.0 * s, 0.0, rgba(pal::GRADIENT_FROM, 0.5), rgba(pal::GRADIENT_TO, 0.5));
+                        }
+                        PRow::Blank => {}
                     }
-                    PRow::Divider => {
-                        f.gradient_rect(inner_x, ly + ch / 2.0, inner_cells as f32 * cw, 1.0 * s, 0.0, rgba(pal::GRADIENT_FROM, 0.5), rgba(pal::GRADIENT_TO, 0.5));
-                    }
-                    PRow::Blank => {}
                 }
             }
             // The resize handle on the panel's left edge.
@@ -907,6 +911,149 @@ pub fn draw(app: &mut App, wid: &str) {
 
 fn renderer_ascent(r: &mut crate::render::Renderer, scale: f64) -> f32 {
     r.fonts(scale).ascent
+}
+
+/// A scratchpad panel: its pads stacked top to bottom, each a label, a
+/// multi-line text box and its two append buttons (app.rs `pad_append`).
+#[allow(clippy::too_many_arguments)]
+fn draw_pads(renderer: &mut crate::render::Renderer, f: &mut Frame, hits: &mut Hits, p: &Panel, l: &Layout, top: f32, focused: bool, scale: f64) {
+    const ALL: &str = "Append all to terminal";
+    const SEL: &str = "Append selection to terminal";
+    let s = scale as f32;
+    let (cw, ch) = (l.cell_w, l.cell_h);
+    let pad = 10.0 * s;
+    let (px, pw) = (l.panel_x, l.panel_w);
+    let inner_x = px + pad;
+    let inner_cells = ((pw - 2.0 * pad) / cw).max(8.0) as usize;
+    let field_cells = inner_cells.saturating_sub(2).max(2);
+    let n = p.pads.len();
+    let gap = 10.0 * s;
+    let slot = ((l.h - pad - top) - gap * (n - 1) as f32) / n as f32;
+    let btn_w = |t: &str| (str_width(t) + 2) as f32 * cw;
+    let btn_h = ch + 4.0 * s;
+    let one_row = btn_w(ALL) + 6.0 * s + btn_w(SEL) <= inner_cells as f32 * cw;
+    let btns_h = if one_row { btn_h } else { 2.0 * btn_h + 4.0 * s };
+    for (i, d) in p.pads.iter().enumerate() {
+        let y0 = top + i as f32 * (slot + gap);
+        let active = i == p.pad;
+        let has_focus = focused && active;
+        let (text, cursor, anchor) = p.pad_view(i);
+        // Label row.
+        let label = if d.secret { format!("🔒 {}", d.label) } else { d.label.clone() };
+        let (lc, ls) = if active { (c(pal::GRADIENT_FROM), Style::Bold) } else { (c(pal::LABEL), Style::Regular) };
+        let lw = renderer.text(f, &label, inner_x, y0, lc, ls, inner_cells, None, scale);
+        if active && n > 1 {
+            renderer.text(f, "⇥ next", inner_x + (lw as f32 + 2.0) * cw, y0, c(pal::MUTED), Style::Italic, 8, None, scale);
+        }
+        // The box.
+        let by = y0 + ch + 4.0 * s;
+        let bh = (y0 + slot - btns_h - 6.0 * s - by).max(ch + 10.0 * s);
+        let rows = (((bh - 10.0 * s) / ch).floor() as usize).max(1);
+        let (bx, bw) = (px + pad - 4.0 * s, pw - 2.0 * pad + 8.0 * s);
+        f.round_rect(bx, by, bw, bh, 8.0 * s, c(pal::BG));
+        if has_focus {
+            f.gradient_border(bx, by, bw, bh, 8.0 * s, if d.secret { 2.0 * s } else { 1.5 * s }, c(pal::GRADIENT_FROM), grad_to());
+        } else if d.secret {
+            f.gradient_border(bx, by, bw, bh, 8.0 * s, 1.0 * s, rgba(pal::GRADIENT_FROM, 0.55), rgba(pal::GRADIENT_TO, 0.55));
+        } else {
+            f.gradient_border(bx, by, bw, bh, 8.0 * s, 1.0 * s, c(pal::MUTED), c(pal::MUTED));
+        }
+        let mask = |t: &str| -> String { t.chars().map(|ch| if ch == '\n' { '\n' } else { '●' }).collect() };
+        let shown = if d.secret { mask(text) } else { text.to_string() };
+        let preedit = if active && !p.preedit.is_empty() { if d.secret { mask(&p.preedit) } else { p.preedit.clone() } } else { String::new() };
+        let display = if preedit.is_empty() {
+            shown.clone()
+        } else {
+            let mut t = shown.clone();
+            t.insert_str(crate::app::byte_at(&t, cursor), &preedit);
+            t
+        };
+        let laid = crate::textfield::layout(&display, field_cells);
+        let caret_at = cursor + preedit.chars().count();
+        let (caret_line, caret_col) = crate::textfield::position_of(&laid, caret_at);
+        let mut first = d.top.get();
+        if d.follow.get() {
+            if caret_line < first {
+                first = caret_line;
+            } else if caret_line >= first + rows {
+                first = caret_line + 1 - rows;
+            }
+        }
+        first = first.min(laid.len().saturating_sub(rows));
+        d.top.set(first);
+        let text_y = by + 5.0 * s;
+        let text_x = inner_x + cw * 0.5;
+        if text.is_empty() && preedit.is_empty() {
+            let ph = if d.secret { "hidden · never shown or copied" } else { "text to keep at hand" };
+            renderer.text(f, ph, text_x, text_y, rgba(pal::LABEL, 0.6), Style::Italic, field_cells, None, scale);
+        }
+        let sel = anchor.filter(|a| *a != cursor && preedit.is_empty()).map(|a| (a.min(cursor), a.max(cursor)));
+        let g = Grad { x0: text_x, x1: text_x + inner_cells as f32 * cw, to: grad_to() };
+        for (k, (lstart, line)) in laid.iter().enumerate().skip(first).take(rows) {
+            let ly = text_y + (k - first) as f32 * ch;
+            if let Some((a, b)) = sel {
+                let ln = line.chars().count();
+                let end = lstart + ln;
+                let (la, lb) = (a.max(*lstart), b.min(end));
+                let pre: String = line.chars().take(la.saturating_sub(*lstart).min(ln)).collect();
+                let sx = text_x + str_width(&pre) as f32 * cw;
+                if la < lb {
+                    let mid: String = line.chars().skip(la - lstart).take(lb - la).collect();
+                    f.rect(sx, ly, str_width(&mid) as f32 * cw, ch, c(pal::SELECT_BG));
+                }
+                // The line break itself is selected.
+                let ends_in_newline = laid.get(k + 1).is_some_and(|(next, _)| *next == end + 1);
+                if ends_in_newline && a <= end && b > end {
+                    f.rect(text_x + str_width(line) as f32 * cw, ly, cw * 0.5, ch, c(pal::SELECT_BG));
+                }
+            }
+            if d.secret {
+                renderer.text(f, line, text_x, ly, c(pal::GRADIENT_FROM), Style::Bold, field_cells + 1, Some(g), scale);
+            } else {
+                renderer.text(f, line, text_x, ly, c(pal::FG), Style::Regular, field_cells + 1, None, scale);
+            }
+        }
+        if caret_line >= first && caret_line < first + rows {
+            let (kx, ky) = (text_x + caret_col as f32 * cw, text_y + (caret_line - first) as f32 * ch);
+            if has_focus {
+                f.rect(kx, ky, 2.0 * s, ch, c(pal::CURSOR));
+                hits_ime(hits, kx, ky, cw, ch);
+            }
+            if !preedit.is_empty() {
+                let pw_cells = str_width(&preedit) as f32;
+                f.gradient_rect(kx - pw_cells * cw, ky + ch - 2.0 * s, (pw_cells * cw).max(cw), 2.0 * s, 0.0, c(pal::GRADIENT_FROM), grad_to());
+            }
+        }
+        // Scrollbar when the text is taller than the box.
+        if laid.len() > rows {
+            let track = bh - 10.0 * s;
+            let th = (track * rows as f32 / laid.len() as f32).max(ch * 0.75);
+            let ty = by + 5.0 * s + (track - th) * first as f32 / (laid.len() - rows) as f32;
+            f.round_rect(bx + bw - 5.0 * s, ty, 3.0 * s, th, 1.5 * s, rgba(pal::LABEL, 0.5));
+        }
+        let lines = if preedit.is_empty() { laid } else { crate::textfield::layout(&shown, field_cells) };
+        hits.pads.push(PadHit { rect: [bx, by, bw, bh], lines, first, origin: (text_x, text_y), rows });
+        // Buttons.
+        let mut x = inner_x;
+        let mut y = by + bh + 6.0 * s;
+        for (label, all) in [(ALL, true), (SEL, false)] {
+            let w = btn_w(label);
+            if !one_row && !all {
+                x = inner_x;
+                y += btn_h + 4.0 * s;
+            }
+            let enabled = if all { !text.is_empty() } else { sel.is_some() };
+            if enabled {
+                f.gradient_rect(x, y, w, btn_h, 7.0 * s, rgba(pal::GRADIENT_FROM, 0.9), rgba(pal::GRADIENT_TO, 0.9));
+                renderer.text(f, label, x + cw, y + 2.0 * s, c(pal::ON_GRADIENT), Style::Bold, str_width(label), None, scale);
+            } else {
+                f.gradient_border(x, y, w, btn_h, 7.0 * s, 1.0 * s, c(pal::MUTED), c(pal::MUTED));
+                renderer.text(f, label, x + cw, y + 2.0 * s, c(pal::MUTED), Style::Regular, str_width(label), None, scale);
+            }
+            hits.pad_buttons.push((p.id.clone(), i, all, [x, y, w, btn_h]));
+            x += w + 6.0 * s;
+        }
+    }
 }
 
 fn hits_ime(h: &mut Hits, x: f32, y: f32, w: f32, hh: f32) {

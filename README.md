@@ -149,6 +149,7 @@ Bundled plugins:
 | **hmxv** ("help me exit vim") | An AI agent in a side panel. It reads and writes the terminal, has plan and execute modes, and works with Anthropic, OpenAI, Gemini, xAI Grok, OpenRouter or a local OpenAI-compatible server. ⌘⇧H opens it. See [docs/HMXV.md](docs/HMXV.md). |
 | **fileholder** | Holds dropped or pasted screenshots and files in a per-launch 0700 directory that is removed when zenteru quits, and types their paths. Claude Code can use a screenshot without it ever being saved. |
 | **setenvvar** | Session environment variables that apply to every command you type, but never to the prompt's own environment, your shell history, or commands sent by plugins. |
+| **holdmytext** | A scratchpad on the right (`@holdmytext`): plaintext on top, secrets (shown as ●, never copied) below, each with *Append all to terminal* and *Append selection to terminal*. Text is kept in memory only, shared by all windows, and gone when zenteru quits. |
 | **complete** | Tab completion. Off by default: Tab goes to your shell as usual. You can turn on a ranked menu, and the JIS Korean IME integration, which merges IME readings with shell candidates. See [docs/IME_CONTRACT.md](docs/IME_CONTRACT.md). |
 
 Side panels can show images (any format macOS decodes), styled text, code,
@@ -187,7 +188,7 @@ crates/zenteru-text   letterblocks, widths (vendored from zencode @ 815657f), pa
 crates/zenteru-term   VT parser, grid + reflow, pty, key/mouse encoding, sessions, JSON, plugin API server
 crates/zenteru-app    AppKit + Metal + CoreText app (tabs, panels, IME, overlays)
 python/zenteru        plugin client package       python/iterm2   iTerm2 compatibility shim
-plugins/              hmxv, fileholder, setenvvar, complete
+plugins/              hmxv, fileholder, setenvvar, holdmytext, complete
 shell/                zsh / bash integration
 docs/                 PROTOCOL, PYTHON_API, HMXV, IME_CONTRACT
 ```

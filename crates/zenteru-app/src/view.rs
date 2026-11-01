@@ -765,11 +765,16 @@ fn mouse(a: &mut App, wid: &str, x: f32, y: f32, btn: MouseButton, action: Mouse
         if action != MouseAction::Press {
             return;
         }
-        if btn == MouseButton::Left && inside(a.windows[wi].hits.panel_input, x, y) {
+        let hits = a.windows[wi].hits.clone();
+        if let Some((pid, pad, all, _)) = hits.pad_buttons.iter().find(|(_, _, _, r)| inside(*r, x, y)) {
+            let (pid, pad, all) = (pid.clone(), *pad, *all);
+            a.pad_append(wid, &pid, pad, all);
+            return;
+        }
+        if btn == MouseButton::Left && (inside(hits.panel_input, x, y) || hits.pads.iter().any(|h| inside(h.rect, x, y))) {
             a.panel_input_mouse(wid, x, y, action, clicks, mods.shift);
             return;
         }
-        let hits = a.windows[wi].hits.clone();
         if inside(hits.panel_close, x, y) {
             a.close_panel_ui(wid);
             return;

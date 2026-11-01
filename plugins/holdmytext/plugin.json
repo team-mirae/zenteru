@@ -1,0 +1,6 @@
+{
+  "name": "holdmytext",
+  "title": "Hold my text",
+  "entry": "main.py",
+  "autostart": true
+}

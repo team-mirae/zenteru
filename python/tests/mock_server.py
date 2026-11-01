@@ -582,6 +582,8 @@ class MockServer:
             "window_id": p.get("window_id") or self.current_window_id,
             "modes": p.get("modes"),
             "mode": p.get("mode"),
+            "kind": p.get("kind", "chat"),
+            "pads": p.get("pads"),
             "messages": {},
             "order": [],
             "status": "",

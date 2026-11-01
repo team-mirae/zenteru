@@ -114,9 +114,27 @@ class Panel:
         window_id: Optional[str] = None,
         modes: Optional[list[str]] = None,
         mode: Optional[str] = None,
+        kind: str = "chat",
+        pads: Optional[Iterable[Union[dict, tuple[str, bool]]]] = None,
     ) -> "Panel":
+        """Create a panel (hidden until :meth:`async_show`).
+
+        ``kind="chat"`` (default) is a transcript with an input box.
+        ``kind="scratchpad"`` is a stack of multi-line text areas ("pads"),
+        each with *Append all to terminal* / *Append selection to terminal*
+        buttons that zenteru handles itself. ``pads`` lists them as
+        ``{"label": str, "secret": bool}`` or ``(label, secret)``; a secret
+        pad is shown as ● and its text is never copied or sent to plugins.
+        The default is a plaintext pad above a secrets pad.
+        """
         hub = await _PanelHub.async_get(connection)
         params: dict[str, Any] = {"title": title}
+        if kind != "chat":
+            params["kind"] = kind
+        if pads is not None:
+            params["pads"] = [
+                p if isinstance(p, dict) else {"label": p[0], "secret": bool(p[1])} for p in pads
+            ]
         if window_id is not None:
             params["window_id"] = window_id
         if modes is not None:
@@ -201,6 +219,16 @@ class Panel:
 
     async def async_set_status(self, text: str) -> None:
         await self._call("panel.set_status", text=text)
+
+    async def async_set_input(self, text: str, secret: bool = False, pad: Optional[int] = None) -> None:
+        """Prefill the input box (``secret`` masks it). On a scratchpad,
+        replace pad ``pad``'s text (default: the focused pad) and focus it."""
+        params: dict[str, Any] = {"text": text}
+        if secret:
+            params["secret"] = True
+        if pad is not None:
+            params["pad"] = int(pad)
+        await self._call("panel.set_input", **params)
 
     async def async_set_mode(self, mode: str) -> None:
         self.mode = mode

@@ -88,8 +88,23 @@ pub struct Hits {
     pub panel_lines: Vec<(usize, String)>,
     pub panel_first_line: usize,
     pub panel_text_origin: (f32, f32),
+    /// Scratchpad panels: one per pad (see `Pad`).
+    pub pads: Vec<PadHit>,
+    /// Scratchpad buttons: (panel id, pad index, append all?, rect).
+    pub pad_buttons: Vec<(String, usize, bool, [f32; 4])>,
     /// Where the IME candidate window should appear (pixels).
     pub ime: [f32; 4],
+}
+
+/// Where a scratchpad pad was drawn: its box, laid-out lines, the first
+/// line shown, the text origin, and how many lines fit.
+#[derive(Clone, Debug, Default)]
+pub struct PadHit {
+    pub rect: [f32; 4],
+    pub lines: Vec<(usize, String)>,
+    pub first: usize,
+    pub origin: (f32, f32),
+    pub rows: usize,
 }
 
 /// The Black Magic bar (see magic.rs); ⌘⇧P opens the same thing.
@@ -264,7 +279,33 @@ pub struct Panel {
     pub input_secret: bool,
     /// Selection anchor in the input (char index); see textfield.rs.
     pub anchor: Option<usize>,
+    /// Scratchpad panels (`panel.create {kind: "scratchpad"}`): stacked
+    /// multi-line text areas instead of a transcript. Empty for chat panels.
+    /// The focused pad's text, caret and anchor live in `input` / `cursor` /
+    /// `anchor` (so textfield.rs edits it); the others are stored here.
+    pub pads: Vec<Pad>,
+    /// The focused pad.
+    pub pad: usize,
     next_msg: u64,
+}
+
+pub struct Pad {
+    pub label: String,
+    /// Shown as ●, never copied, never sent to plugins.
+    pub secret: bool,
+    pub text: String,
+    pub cursor: usize,
+    pub anchor: Option<usize>,
+    /// First line shown (render keeps it in range).
+    pub top: std::cell::Cell<usize>,
+    /// Scroll to the caret on the next draw (false after the wheel).
+    pub follow: std::cell::Cell<bool>,
+}
+
+impl Pad {
+    pub fn new(label: &str, secret: bool) -> Pad {
+        Pad { label: label.to_string(), secret, text: String::new(), cursor: 0, anchor: None, top: 0.into(), follow: true.into() }
+    }
 }
 
 enum PendingCall {
@@ -1413,6 +1454,9 @@ impl App {
             if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
                 p.insert(text);
                 p.preedit.clear();
+                if let Some(d) = p.pads.get(p.pad) {
+                    d.follow.set(true);
+                }
             }
             return;
         }
@@ -1901,7 +1945,17 @@ impl App {
         let Some(wi) = self.win_index(wid) else { return };
         if let Some(text) = platform::clipboard_text() {
             if self.windows[wi].focus == Focus::Panel {
-                self.insert_text(wid, &text.replace("\r\n", " ").replace('\n', " "));
+                // Scratchpads keep line breaks; a one-line input doesn't.
+                let multi = self.windows[wi].panel.as_ref().and_then(|id| self.panels.get(id)).is_some_and(|p| p.is_scratchpad());
+                let text = if multi { text.replace("\r\n", "\n").replace('\r', "\n") } else { text.replace("\r\n", " ").replace('\n', " ") };
+                if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
+                    p.insert(&text);
+                    p.preedit.clear();
+                    if let Some(d) = p.pads.get(p.pad) {
+                        d.follow.set(true);
+                    }
+                }
+                self.windows[wi].dirty = true;
                 return;
             }
             let Some(sid) = self.windows[wi].active_session().map(String::from) else { return };
@@ -2141,9 +2195,16 @@ impl App {
         let Some(wi) = self.win_index(wid) else { return };
         let l = self.windows[wi].layout.clone();
         if x >= l.panel_x && l.panel_w > 0.0 {
+            let pad_under = self.windows[wi].hits.pads.iter().position(|h| x >= h.rect[0] && x < h.rect[0] + h.rect[2] && y >= h.rect[1] && y < h.rect[1] + h.rect[3]);
             if let Some(p) = self.windows[wi].panel.clone().and_then(|id| self.panels.get_mut(&id)) {
                 let lines = (dy_px / l.cell_h as f64).round() as isize;
-                p.scroll = (p.scroll as isize + lines).max(0) as usize;
+                if let Some(d) = pad_under.and_then(|i| p.pads.get(i)) {
+                    // Render clamps it to the text.
+                    d.top.set((d.top.get() as isize - lines).max(0) as usize);
+                    d.follow.set(false);
+                } else {
+                    p.scroll = (p.scroll as isize + lines).max(0) as usize;
+                }
             }
             self.windows[wi].dirty = true;
             return;
@@ -2191,6 +2252,9 @@ impl App {
         };
         if has_marked {
             return false;
+        }
+        if self.panels.get(&pid).is_some_and(|p| p.is_scratchpad()) {
+            return self.pad_key(wi, &pid, key, mods);
         }
         let conn = self.panels.get(&pid).map(|p| p.conn);
         let Some(p) = self.panels.get_mut(&pid) else { return true };
@@ -2282,6 +2346,141 @@ impl App {
         }
         self.windows[wi].dirty = true;
         true
+    }
+
+    /// Keys in a scratchpad pad: a multi-line text area. Enter is a
+    /// newline, Tab / ⇧Tab move between pads, ↑/↓ move by screen line.
+    fn pad_key(&mut self, wi: usize, pid: &str, key: &Key, mods: Mods) -> bool {
+        let Some(p) = self.panels.get_mut(pid) else { return true };
+        let hit = self.windows[wi].hits.pads.get(p.pad).cloned().unwrap_or_default();
+        let n = p.len_chars();
+        let (ls, le) = p.line_bounds();
+        match key {
+            Key::Escape => {
+                if p.selection().is_some() {
+                    p.anchor = None;
+                } else {
+                    self.windows[wi].focus = Focus::Terminal;
+                }
+            }
+            Key::Enter => p.insert("\n"),
+            Key::Tab => {
+                let k = p.pads.len();
+                let to = if mods.shift { (p.pad + k - 1) % k } else { (p.pad + 1) % k };
+                p.focus_pad(to);
+            }
+            Key::Backspace | Key::Delete => {
+                if !p.delete_selection() {
+                    let back = *key == Key::Backspace;
+                    let (from, to) = match (back, mods.cmd, mods.alt) {
+                        (true, true, _) => (if p.cursor == ls { ls.saturating_sub(1) } else { ls }, p.cursor),
+                        (true, _, true) => (word_left_chars(&p.input, p.cursor), p.cursor),
+                        (true, _, _) => (p.cursor.saturating_sub(1), p.cursor),
+                        (false, true, _) => (p.cursor, if p.cursor == le { (le + 1).min(n) } else { le }),
+                        (false, _, true) => (p.cursor, word_right_chars(&p.input, p.cursor)),
+                        (false, _, _) => (p.cursor, (p.cursor + 1).min(n)),
+                    };
+                    if from < to {
+                        p.anchor = Some(from);
+                        p.cursor = to;
+                        p.delete_selection();
+                    }
+                }
+            }
+            Key::Left | Key::Right if !mods.shift && !mods.cmd && !mods.alt && p.selection().is_some() => {
+                let (a, b) = p.selection().unwrap();
+                p.move_to(if *key == Key::Left { a } else { b }, false);
+            }
+            Key::Left | Key::Right | Key::Home | Key::End => {
+                let to = match (key, mods.cmd, mods.alt) {
+                    (Key::Home, ..) | (Key::Left, true, _) => ls,
+                    (Key::End, ..) | (Key::Right, true, _) => le,
+                    (Key::Left, _, true) => word_left_chars(&p.input, p.cursor),
+                    (Key::Right, _, true) => word_right_chars(&p.input, p.cursor),
+                    (Key::Left, ..) => p.cursor.saturating_sub(1),
+                    _ => (p.cursor + 1).min(n),
+                };
+                p.move_to(to, mods.shift);
+            }
+            Key::Up | Key::Down | Key::PageUp | Key::PageDown => {
+                let up = matches!(key, Key::Up | Key::PageUp);
+                let to = if mods.cmd || hit.lines.is_empty() {
+                    if up { 0 } else { n }
+                } else {
+                    let step = if matches!(key, Key::PageUp | Key::PageDown) { hit.rows.max(2) - 1 } else { 1 };
+                    let (line, col) = crate::textfield::position_of(&hit.lines, p.cursor.min(n));
+                    if up && line == 0 {
+                        0
+                    } else if !up && line + 1 >= hit.lines.len() {
+                        n
+                    } else {
+                        let target = if up { line.saturating_sub(step) } else { (line + step).min(hit.lines.len() - 1) };
+                        crate::textfield::char_at(&hit.lines, target, col as f32 + 0.5)
+                    }
+                };
+                p.move_to(to.min(n), mods.shift);
+            }
+            Key::Text(t) if mods.ctrl && t == "u" => {
+                p.anchor = Some(ls);
+                p.delete_selection();
+            }
+            Key::Text(t) if mods.ctrl && t == "k" => {
+                p.anchor = Some(if p.cursor == le { (le + 1).min(n) } else { le });
+                p.delete_selection();
+            }
+            Key::Text(t) if mods.ctrl && t == "a" => p.move_to(ls, mods.shift),
+            Key::Text(t) if mods.ctrl && t == "e" => p.move_to(le, mods.shift),
+            Key::Text(_) if mods.ctrl => {}
+            Key::Text(_) => return false,
+            _ => {}
+        }
+        if let Some(d) = p.pads.get(p.pad) {
+            d.follow.set(true);
+        }
+        self.windows[wi].dirty = true;
+        true
+    }
+
+    /// A scratchpad button: append pad `pad`'s text (all of it, or its
+    /// selection) to the window's terminal as if pasted, without Enter.
+    /// The text never leaves the core (secret pads included).
+    pub fn pad_append(&mut self, wid: &str, pid: &str, pad: usize, all: bool) {
+        let Some(p) = self.panels.get(pid) else { return };
+        if pad >= p.pads.len() {
+            return;
+        }
+        let secret = p.pads[pad].secret;
+        let what = if p.pads[pad].label.is_empty() { "the pad".to_string() } else { p.pads[pad].label.clone() };
+        let text = p.pad_text(pad, all).unwrap_or_default().replace("\r\n", "\n");
+        if text.is_empty() {
+            let msg = if all { format!("{what} is empty") } else { format!("Nothing is selected in {what}") };
+            self.toast(wid, &msg, false);
+            return;
+        }
+        let Some(sid) = self.win(wid).and_then(|w| w.active_session()).map(String::from) else { return };
+        let Some(s) = self.sessions.get_mut(&sid) else { return };
+        if s.pwd.active {
+            // A password field: type it (one line) into the hidden field.
+            let line = text.split('\n').next().unwrap_or("").to_string();
+            s.pwd.buf.push_str(&line);
+            s.pwd.count += zenteru_text::text::grapheme_count(&line);
+            s.preedit.clear();
+            s.menu = None;
+            self.send_user(&sid, line.as_bytes());
+        } else {
+            s.preedit.clear();
+            s.menu = None;
+            let modes = s.s.term.lock().unwrap().modes.clone();
+            let bytes = input::encode_paste(&text, &modes);
+            self.send_user(&sid, &bytes);
+        }
+        if let Some(w) = self.win(wid) {
+            w.focus = Focus::Terminal;
+            w.dirty = true;
+        }
+        let n = zenteru_text::text::grapheme_count(&text);
+        let msg = if secret { format!("Appended a secret ({n} characters)") } else { format!("Appended {n} characters") };
+        self.toast(wid, &msg, false);
     }
 
     pub fn panel_action(&mut self, pid: &str, msg: u64, action: &str) {
@@ -2745,6 +2944,21 @@ impl App {
                 let Some(wid) = wid else { return Some(Err(("not_found", "no window".into()))) };
                 let modes: Vec<String> = p.get("modes").as_arr().iter().filter_map(|m| m.as_str().map(String::from)).collect();
                 let mode = p.get("mode").as_str().map(String::from).or_else(|| modes.first().cloned()).unwrap_or_default();
+                let pads: Vec<Pad> = match p.get("kind").as_str().unwrap_or("chat") {
+                    "chat" => Vec::new(),
+                    "scratchpad" => {
+                        let given: Vec<Pad> = p
+                            .get("pads")
+                            .as_arr()
+                            .iter()
+                            .take(4)
+                            .map(|d| Pad::new(d.get("label").as_str().unwrap_or(""), d.get("secret").as_bool().unwrap_or(false)))
+                            .collect();
+                        if given.is_empty() { vec![Pad::new("Plaintext", false), Pad::new("Secrets", true)] } else { given }
+                    }
+                    k => return Some(Err(("bad_request", format!("unknown panel kind {k:?} (chat, scratchpad)")))),
+                };
+                let input_secret = pads.first().is_some_and(|d| d.secret);
                 self.panels.insert(
                     pid.clone(),
                     Panel {
@@ -2761,8 +2975,10 @@ impl App {
                         preedit: String::new(),
                         scroll: 0,
                         visible: false,
-                        input_secret: false,
+                        input_secret,
                         anchor: None,
+                        pads,
+                        pad: 0,
                         next_msg: 1,
                     },
                 );
@@ -2847,10 +3063,16 @@ impl App {
                             Json::obj()
                         }
                         "panel.set_input" => {
+                            if let Some(i) = p.get("pad").as_i64().filter(|_| pan.is_scratchpad()) {
+                                if i < 0 || i as usize >= pan.pads.len() {
+                                    return Some(Err(("bad_request", format!("no pad {i}"))));
+                                }
+                                pan.focus_pad(i as usize);
+                            }
                             pan.input = p.get("text").as_str().unwrap_or("").to_string();
                             pan.cursor = pan.input.chars().count();
                             pan.anchor = None;
-                            pan.input_secret = p.get("secret").as_bool().unwrap_or(false);
+                            pan.input_secret = if pan.is_scratchpad() { pan.pads[pan.pad].secret } else { p.get("secret").as_bool().unwrap_or(false) };
                             Json::obj()
                         }
                         "panel.set_width" => Json::obj(),
@@ -2901,7 +3123,7 @@ impl App {
                 ok(result)
             }
             // Test hooks: drive zenteru's own keyboard path. Only with ZENTERU_DEBUG.
-            "debug.type" | "debug.key" | "debug.state" | "debug.zoom" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
+            "debug.type" | "debug.key" | "debug.state" | "debug.zoom" | "debug.pad_append" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
                 let wid = p.get("window_id").as_str().map(String::from).or_else(|| self.windows.first().map(|w| w.id.clone()));
                 let Some(wid) = wid else { return Some(Err(("not_found", "no window".into()))) };
                 match method {
@@ -2909,6 +3131,13 @@ impl App {
                         let t = p.get("text").as_str().unwrap_or("").to_string();
                         for g in zenteru_text::seg::graphemes(&t) {
                             self.insert_text(&wid, g);
+                        }
+                    }
+                    "debug.pad_append" => {
+                        let pid = self.windows.iter().find(|w| w.id == wid).and_then(|w| w.panel.clone());
+                        if let Some(pid) = pid {
+                            let pad = p.get("pad").as_i64().unwrap_or(0).max(0) as usize;
+                            self.pad_append(&wid, &pid, pad, p.get("all").as_bool().unwrap_or(true));
                         }
                     }
                     "debug.zoom" => {
@@ -2954,6 +3183,29 @@ impl App {
                     .with("toast", w.and_then(|w| w.toast.as_ref()).map(|t| format!("{}{}", if t.1 { "ERROR " } else { "" }, t.0)))
                     .with("panel_input", panel.map(|p| p.input.clone()))
                     .with("panel_selection", panel.and_then(|p| p.selected_text()))
+                    .with(
+                        "panel_pads",
+                        Json::Arr(
+                            panel
+                                .map(|p| {
+                                    (0..p.pads.len())
+                                        .map(|i| {
+                                            let (t, ..) = p.pad_view(i);
+                                            let sel = p.pad_text(i, false);
+                                            // Secret pads: lengths only, even here.
+                                            let shown = |v: String| if p.pads[i].secret { Json::from(v.chars().count()) } else { Json::from(v) };
+                                            Json::obj()
+                                                .with("label", p.pads[i].label.as_str())
+                                                .with("secret", p.pads[i].secret)
+                                                .with("focused", i == p.pad)
+                                                .with("text", shown(t.to_string()))
+                                                .with("selection", sel.map(shown).unwrap_or(Json::Null))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                    )
                     .with("magic_open", pal.is_some())
                     .with("magic_text", pal.map(|p| p.text.clone()))
                     .with("magic_message", pal.and_then(|p| p.message.clone())))
@@ -3362,16 +3614,35 @@ impl App {
         let Some(wi) = self.win_index(wid) else { return };
         let w = &self.windows[wi];
         let Some(pid) = w.panel.clone() else { return };
-        let (ox, oy) = w.hits.panel_text_origin;
         let (cw, ch) = (w.layout.cell_w, w.layout.cell_h);
-        let lines = w.hits.panel_lines.clone();
-        let first = w.hits.panel_first_line;
+        // Scratchpads: a press picks the pad under the pointer; a drag
+        // stays in the pad it started in.
+        let mut pad = None;
+        if let Some(p) = self.panels.get_mut(&pid).filter(|p| p.is_scratchpad()) {
+            let i = if action == MouseAction::Press {
+                w.hits.pads.iter().position(|h| x >= h.rect[0] && x < h.rect[0] + h.rect[2] && y >= h.rect[1] && y < h.rect[1] + h.rect[3]).unwrap_or(p.pad)
+            } else {
+                p.pad
+            };
+            p.focus_pad(i);
+            pad = Some(i);
+        }
+        let ((ox, oy), lines, first) = match pad.and_then(|i| w.hits.pads.get(i)) {
+            Some(h) => (h.origin, h.lines.clone(), h.first),
+            None if pad.is_some() => return,
+            None => (w.hits.panel_text_origin, w.hits.panel_lines.clone(), w.hits.panel_first_line),
+        };
         if lines.is_empty() {
             return;
         }
-        let line = (((y - oy) / ch).floor().max(0.0) as usize + first).min(lines.len() - 1);
+        let line = ((((y - oy) / ch).floor().max(0.0) as usize) + first).min(lines.len() - 1);
+        // Above the first visible line while dragging: scroll up.
+        let line = if y < oy && action == MouseAction::Motion { line.saturating_sub(1) } else { line };
         let at = crate::textfield::char_at(&lines, line, ((x - ox) / cw).max(0.0));
         let Some(p) = self.panels.get_mut(&pid) else { return };
+        if let Some(d) = p.pads.get(p.pad) {
+            d.follow.set(true);
+        }
         match action {
             MouseAction::Press => {
                 match clicks {

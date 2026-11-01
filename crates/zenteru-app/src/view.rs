@@ -350,14 +350,28 @@ define_class!(
             self.on_mouse(event, MouseButton::Right, MouseAction::Release);
         }
 
+        // Button 2 is the middle button; 3 and 4 are a mouse's back and
+        // forward side buttons, which switch to the previous / next tab.
         #[unsafe(method(otherMouseDown:))]
         fn other_down(&self, event: &NSEvent) {
-            self.on_mouse(event, MouseButton::Middle, MouseAction::Press);
+            match event.buttonNumber() {
+                2 => self.on_mouse(event, MouseButton::Middle, MouseAction::Press),
+                n @ (3 | 4) => {
+                    let wid = self.wid();
+                    with_app(|a| {
+                        a.cmd_chord.other_input();
+                        a.builtin(&wid, if n == 3 { "prev_tab" } else { "next_tab" });
+                    });
+                }
+                _ => {}
+            }
         }
 
         #[unsafe(method(otherMouseUp:))]
         fn other_up(&self, event: &NSEvent) {
-            self.on_mouse(event, MouseButton::Middle, MouseAction::Release);
+            if event.buttonNumber() == 2 {
+                self.on_mouse(event, MouseButton::Middle, MouseAction::Release);
+            }
         }
 
         #[unsafe(method(mouseMoved:))]
@@ -1128,6 +1142,8 @@ fn build_menu(d: &AppDelegate) {
         sep(),
         b("Next Tab", "]", cs, "next_tab"),
         b("Previous Tab", "[", cs, "prev_tab"),
+        b("Next Tab", "]", cmd, "next_tab"),
+        b("Previous Tab", "[", cmd, "prev_tab"),
         b("Next Tab", "\t", NSEventModifierFlags::Control, "next_tab"),
         b("Previous Tab", "\t", NSEventModifierFlags::Control | NSEventModifierFlags::Shift, "prev_tab"),
         sep(),

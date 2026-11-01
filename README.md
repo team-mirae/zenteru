@@ -34,6 +34,8 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   - Drag a tab to reorder it, drag it out to make a new window, or drop it
     on another window's tab bar to merge.
   - Dragging the only tab moves the window.
+  - ⌘[ / ⌘] (or ⌘⇧[ / ⌘⇧], ⌃⇧⇥ / ⌃⇥) and a mouse's back / forward side
+    buttons switch to the previous / next tab.
   - The whole top bar uses the zencode gradient, and the window corners are
     square.
 - **Black Magic.** Type `@` at an empty prompt (local or over ssh), or in

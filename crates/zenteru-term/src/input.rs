@@ -186,6 +186,40 @@ pub fn encode_edit(action: EditAction, line: &str, cursor: usize, alt_screen: bo
     }
 }
 
+/// Keys that strip whitespace around a command line, from what's on screen:
+/// `line`/`cursor` as for `encode_edit`. Emacs-style keys (⌃A, ⌃E, ⌃D,
+/// Backspace) that bash, zsh and most line editors share. Spaces typed at
+/// the end of the line leave no trace on screen, so trailing ones are only
+/// seen up to the cursor; with the cursor inside the text they stay.
+pub fn trim_keys(line: &str, cursor: usize) -> Vec<u8> {
+    use zenteru_text::text::{byte_index, grapheme_count};
+    let g: Vec<&str> = (0..grapheme_count(line)).map(|i| &line[byte_index(line, i)..byte_index(line, i + 1)]).collect();
+    let space = |s: &&&str| s.chars().all(char::is_whitespace);
+    let lead = g.iter().take_while(space).count();
+    if lead == g.len() {
+        // Nothing but whitespace: clear the line (⌃E then ⌃U, which kills
+        // the whole line in zsh and back to the start in bash).
+        return if cursor == 0 && g.is_empty() { Vec::new() } else { vec![0x05, 0x15] };
+    }
+    let trail = g.iter().rev().take_while(space).count();
+    let text_end = g.len() - trail;
+    let mut out = Vec::new();
+    if cursor >= text_end {
+        // At the end: delete back to the text, which leaves the cursor there.
+        out.extend(b"\x7f".repeat(cursor - text_end));
+        let to = text_end - lead;
+        out.push(0x01);
+        out.extend(std::iter::repeat_n(0x04, lead));
+        out.extend(b"\x1b[C".repeat(to));
+    } else {
+        // Inside the text: only the leading run, then back to the same character.
+        out.push(0x01);
+        out.extend(std::iter::repeat_n(0x04, lead));
+        out.extend(b"\x1b[C".repeat(cursor.saturating_sub(lead)));
+    }
+    out
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MouseButton {
     Left,
@@ -281,7 +315,15 @@ mod tests {
 
     #[test]
     fn natural_editing_uses_letterblocks() {
-        // "echo 한국어를" with the cursor at the end: ⌥⌫ removes 를 only.
+        // @trim from the screen: leading run always, trailing up to the cursor.
+    assert_eq!(trim_keys("  ls -l", 9), [b"\x7f".repeat(2), vec![0x01, 0x04, 0x04], b"\x1b[C".repeat(5)].concat());
+    assert_eq!(trim_keys("  ls", 3), [vec![0x01, 0x04, 0x04], b"\x1b[C".repeat(1)].concat());
+    assert_eq!(trim_keys("　한국어", 4), [vec![0x01, 0x04], b"\x1b[C".repeat(3)].concat());
+    assert_eq!(trim_keys("ls", 2), [vec![0x01], b"\x1b[C".repeat(2)].concat());
+    assert_eq!(trim_keys("", 3), vec![0x05, 0x15]);
+    assert!(trim_keys("", 0).is_empty());
+
+    // "echo 한국어를" with the cursor at the end: ⌥⌫ removes 를 only.
         let line = "echo 한국어를";
         let end = 9;
         assert_eq!(encode_edit(EditAction::DeleteWordBack, line, end, false), b"\x7f");

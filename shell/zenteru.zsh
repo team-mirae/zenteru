@@ -81,12 +81,28 @@ _zenteru_info() {
   [[ -r "${ZENTERU_SESSION_DIR-}/info.ans" ]] && command cat -- "$ZENTERU_SESSION_DIR/info.ans"
 }
 
+# Black Magic `@trim` sends ESC[9237~: strip whitespace around the command
+# line, keeping the cursor on the same character.
+_zenteru_trim() {
+  emulate -L zsh -o extendedglob
+  local lead=${(M)BUFFER##[[:space:]]#}
+  local cur=$(( CURSOR - $#lead ))
+  BUFFER=${${BUFFER#$lead}%%[[:space:]]#}
+  (( cur < 0 )) && cur=0
+  (( cur > $#BUFFER )) && cur=$#BUFFER
+  CURSOR=$cur
+}
+
 # ZLE isn't up yet while .zshenv runs, so hook line-init on the first prompt.
 _zenteru_first_precmd() {
   add-zsh-hook -d precmd _zenteru_first_precmd
   zle -N _zenteru_info
+  zle -N _zenteru_trim
   local km
-  for km in emacs viins vicmd; do bindkey -M $km '\e[9236~' _zenteru_info 2>/dev/null; done
+  for km in emacs viins vicmd; do
+    bindkey -M $km '\e[9236~' _zenteru_info 2>/dev/null
+    bindkey -M $km '\e[9237~' _zenteru_trim 2>/dev/null
+  done
   if (( $+functions[add-zle-hook-widget] )); then
     add-zle-hook-widget line-init _zenteru_line_init
   else

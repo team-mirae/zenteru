@@ -40,7 +40,13 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   vim's normal mode, or press ⌘⇧P. Known commands run (`@new-tab`,
   `@line-numbers`, plugin commands), and anything else goes to the agentic
   helper (hmxv): `@why did -3 fail?`. `@help` and `@hmxv` belong to hmxv,
-  and `@@` types a literal `@`.
+  and `@@` types a literal `@`. `@trim` (⌘⇧P while typing) strips the
+  spaces around the command you're typing. Holding left ⌘ and right ⌘
+  together, then letting go with no other key in between, opens or closes
+  Black Magic anywhere (not a double tap: both keys have to be down at
+  once). It's on by default; turn it off with
+  `@command-to-black-magic off` (`on`, or `toggle` with no argument) or
+  View → Left ⌘ + Right ⌘ Opens Black Magic.
 - **Line references.** In shell mode a gutter shows ゼロ, -1, -2 … counting
   up from the cursor's line, plus a 3-character code per line taken from a
   UUIDv7 stamped when the line arrived. You can cite either one to hmxv or
@@ -63,10 +69,15 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   when nothing is playing. `@play`, `@pause`, `@mute`, `@unmute` and
   `@volume up|down|min|max|0–100|0.00–1.00` work on their own or as
   subcommands of `@music`, along with `@music next` and `@music prev`.
-- **Local scripts by name.** In a zenteru shell, `deploy.sh` runs
-  `./deploy.sh` when no command of that name exists (with a dim note
-  saying so). Real commands always win, and an existing
-  command-not-found handler still gets everything else.
+- **Local files by name.** In a zenteru shell, `deploy.sh` runs
+  `./deploy.sh` when no command of that name exists, any other file
+  (`Screenshot.png`) opens with `open`, each with a dim note saying so,
+  and a folder alone on the line becomes `cd -- folder` whatever
+  `AUTO_CD` says. Real commands always win, and an existing
+  command-not-found handler still gets everything else. A path that
+  can't run as is (`./notes.pdf`) gets `open --` or its interpreter put
+  in front when you press Enter, and Tab in the first word offers files
+  as well as commands (zsh).
 - **Password fields you can't miss.**
   - When the tty turns echo off (sudo, ssh, `read -s`), the input shows a
     gradient frame with one ● per key.

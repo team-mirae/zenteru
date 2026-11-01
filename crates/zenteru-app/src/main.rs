@@ -2,6 +2,7 @@
 //! 全角 support, tabs, and an iTerm2-style Python plugin API.
 
 mod app;
+mod chord;
 mod font;
 mod blocks;
 mod gutter;

@@ -308,6 +308,23 @@ define_class!(
             self.on_key_down(event);
         }
 
+        // Left ⌘ + right ⌘ (src/chord.rs).
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            let wid = self.wid();
+            let flags = event.modifierFlags().bits() as u64;
+            with_app(|a| a.cmd_chord_flags(&wid, flags));
+            unsafe { msg_send![super(self), flagsChanged: event] }
+        }
+
+        // ⌘ shortcuts reach the window before keyDown: (and the menus), so
+        // a chord with a key in it is seen here.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            with_app(|a| a.cmd_chord.other_input());
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             self.on_mouse(event, MouseButton::Left, MouseAction::Press);
@@ -537,6 +554,9 @@ impl TermView {
         let wid = self.wid();
         let mods = mods_of(event.modifierFlags());
         let clicks = if action == MouseAction::Press { event.clickCount() } else { 0 };
+        if action == MouseAction::Press {
+            with_app(|a| a.cmd_chord.other_input());
+        }
         let screen = NSEvent::mouseLocation();
         let view = self.retain();
         with_app(|a| mouse(a, &wid, x, y, btn, action, clicks, mods, (screen.x, screen.y), event, &view));
@@ -870,6 +890,7 @@ define_class!(
         fn did_resign_key(&self, _n: &NSNotification) {
             let id = self.ivars().window_id.clone();
             with_app_or_later(move |a| {
+                a.cmd_chord.reset();
                 if let Some(w) = a.win(&id) {
                     w.dirty = true;
                 }
@@ -994,6 +1015,17 @@ define_class!(
             });
         }
 
+        // Checkmarks for settings in the menus.
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
+            let name = item.representedObject().and_then(|o| o.downcast::<NSString>().ok()).map(|s| s.to_string());
+            if name.as_deref() == Some("command_to_black_magic") {
+                let on = with_app(|a| a.cmd_chord_on).unwrap_or(false);
+                item.setState(if on { 1 } else { 0 });
+            }
+            true
+        }
+
         #[unsafe(method(pluginCommand:))]
         fn plugin_command(&self, sender: &NSMenuItem) {
             let handler = sender.representedObject().and_then(|o| o.downcast::<NSString>().ok()).map(|s| s.to_string()).unwrap_or_default();
@@ -1086,6 +1118,7 @@ fn build_menu(d: &AppDelegate) {
             sep(),
             b("Focus Side Panel", "`", NSEventModifierFlags::Control, "focus_panel"),
             b("Line Numbers (ゼロ / codes)", "l", NSEventModifierFlags::Command | NSEventModifierFlags::Shift, "toggle_gutter"),
+            b("Left ⌘ + Right ⌘ Opens Black Magic", "", NSEventModifierFlags::empty(), "command_to_black_magic"),
             item("Enter Full Screen", Some(sel!(toggleFullScreen:)), "f", NSEventModifierFlags::Command | NSEventModifierFlags::Control, d, None),
         ],
     );

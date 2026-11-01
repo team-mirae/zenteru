@@ -305,6 +305,9 @@ pub struct App {
     pub gutter: bool,
     last_minute: i64,
     pub rain_style: crate::gutter::RainStyle,
+    /// Left ⌘ + right ⌘ opens Black Magic (`@command-to-black-magic`).
+    pub cmd_chord: crate::chord::CmdChord,
+    pub cmd_chord_on: bool,
     /// Latest frame from a custom gutter driver: (width, height, RGBA, when).
     pub gutter_frame: Option<(u32, u32, std::rc::Rc<Vec<u8>>, Instant)>,
     last_gutter_event: (u32, u32, bool, &'static str),
@@ -368,6 +371,8 @@ impl App {
                 .or_else(|| crate::settings::load().get("rain").as_str().map(String::from))
                 .and_then(|v| crate::gutter::RainStyle::parse(&v))
                 .unwrap_or(crate::gutter::RainStyle::Drops),
+            cmd_chord: crate::chord::CmdChord::default(),
+            cmd_chord_on: crate::settings::load().get("command_to_black_magic").as_bool().unwrap_or(true),
             gutter_frame: None,
             last_gutter_event: (0, 0, false, ""),
             jobs_tx: jobs.0,
@@ -950,6 +955,7 @@ impl App {
     /// Handle a key press. Returns false when it should go to the IME
     /// (`interpretKeyEvents`) instead.
     pub fn key_down(&mut self, wid: &str, key: Key, mods: Mods, has_marked: bool) -> bool {
+        self.cmd_chord.other_input();
         let Some(wi) = self.win_index(wid) else { return true };
         self.windows[wi].dirty = true;
 
@@ -1122,6 +1128,61 @@ impl App {
         let mut plugins: Vec<String> = self.plugins.iter().map(|(n, _)| n.clone()).collect();
         plugins.sort();
         crate::splash::Info { version: zenteru_text::brand::VERSION.to_string(), shell, font: Some(font), plugins }
+    }
+
+    /// A modifier key changed in window `wid` (raw modifierFlags).
+    pub fn cmd_chord_flags(&mut self, wid: &str, flags: u64) {
+        if !self.cmd_chord.flags(flags) || !self.cmd_chord_on {
+            return;
+        }
+        let sid = self.win(wid).and_then(|w| w.active_session()).map(String::from);
+        let password = sid.and_then(|sid| self.sessions.get(&sid)).is_some_and(|s| s.pwd.active);
+        let Some(w) = self.win(wid) else { return };
+        if w.palette.is_some() {
+            w.palette = None;
+            w.dirty = true;
+        } else if !password {
+            self.open_magic(wid);
+        }
+    }
+
+    /// `@command-to-black-magic on | off | toggle` (no argument: toggle).
+    pub fn set_cmd_chord(&mut self, wid: &str, arg: &str) {
+        let on = match arg.trim().to_lowercase().as_str() {
+            "on" | "true" | "1" => true,
+            "off" | "false" | "0" => false,
+            "" | "toggle" => !self.cmd_chord_on,
+            other => {
+                self.toast(wid, &format!("command-to-black-magic: expected on, off or toggle, not {other:?}"), true);
+                return;
+            }
+        };
+        self.cmd_chord_on = on;
+        crate::settings::set("command_to_black_magic", on);
+        self.toast(wid, if on { "Left ⌘ + right ⌘ opens Black Magic: on" } else { "Left ⌘ + right ⌘ opens Black Magic: off" }, false);
+    }
+
+    /// `@trim`: strip whitespace around the command line being typed. zsh
+    /// with zenteru's integration trims its real buffer (shell/zenteru.zsh);
+    /// elsewhere (bash, ssh) editing keys work from what's on screen.
+    pub fn trim_line(&mut self, sid: &str) {
+        let Some(s) = self.sessions.get(sid) else { return };
+        let bytes = {
+            let t = s.s.term.lock().unwrap();
+            if t.alt_screen() {
+                return;
+            }
+            let integrated = t.prompt.phase == PromptPhase::Editing && t.prompt.input_start.is_some();
+            if integrated && s.s.shell == "zsh" && s.s.is_shell_foreground() {
+                b"\x1b[9237~".to_vec()
+            } else {
+                let (line, cur) = t.edit_line();
+                input::trim_keys(&line, cur)
+            }
+        };
+        if !bytes.is_empty() {
+            self.send_user(sid, &bytes);
+        }
     }
 
     /// `@info` / `@version` / `@zenteru`: print the splash above the prompt.
@@ -1590,6 +1651,12 @@ impl App {
                         s.selection = Some(Selection { anchor: start, head: end, unit: 0 });
                     }
                     self.mark_session_dirty(&sid);
+                }
+            }
+            "command_to_black_magic" => self.set_cmd_chord(wid, ""),
+            "trim" => {
+                if let Some(sid) = self.win(wid).and_then(|w| w.active_session()).map(String::from) {
+                    self.trim_line(&sid);
                 }
             }
             "clear" => {
@@ -2755,6 +2822,8 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.next_tab", "Next Tab", "next-tab"),
     ("zenteru.prev_tab", "Previous Tab", "prev-tab"),
     ("zenteru.clear", "Clear Scrollback", "clear"),
+    ("zenteru.trim", "Trim spaces around the typed command", "trim"),
+    ("zenteru.command_to_black_magic", "Both ⌘ keys open Black Magic: on | off | toggle", "command-to-black-magic"),
     ("zenteru.bigger", "Bigger Text", "bigger"),
     ("zenteru.smaller", "Smaller Text", "smaller"),
     ("zenteru.reset_font", "Reset Text Size", "reset-font"),

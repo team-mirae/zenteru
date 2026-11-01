@@ -79,6 +79,16 @@ fn zsh_marks_and_setenvvar() {
     wait(&s, "typed", |s| s.term.lock().unwrap().edit_line().0 == "echo 한국어를");
     assert_eq!(s.term.lock().unwrap().edit_line().1, 9);
     s.write(&[0x15]);
+
+    // @trim (ESC[9237~): whitespace around the real buffer goes, trailing
+    // spaces the screen can't show included; the cursor stays on its letter.
+    s.write(b"   echo  hi   \x1b[D\x1b[D\x1b[D\x1b[D\x1b[D");
+    wait(&s, "untrimmed", |s| s.term.lock().unwrap().edit_line() == ("   echo  hi".to_string(), 9));
+    s.write(b"\x1b[9237~");
+    wait(&s, "trimmed", |s| s.term.lock().unwrap().edit_line() == ("echo  hi".to_string(), 6));
+    s.write(b"X");
+    wait(&s, "cursor kept", |s| s.term.lock().unwrap().edit_line().0 == "echo  Xhi");
+    s.write(&[0x05, 0x15]);
     drop(s);
     let _ = std::fs::remove_dir_all(&tmp);
 }

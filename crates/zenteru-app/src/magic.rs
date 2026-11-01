@@ -18,7 +18,7 @@ use crate::app::{App, Palette};
 
 /// Command names a plugin may only claim if it says hello as the owner
 /// ("" = zenteru's own built-ins: no plugin may claim them).
-const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
+const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("trim", ""), ("command-to-black-magic", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
 
 pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
 pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
@@ -203,6 +203,8 @@ impl App {
                 if matches!(b.as_str(), "music" | "music_focus" | "play" | "pause" | "mute" | "unmute" | "volume") {
                     // These take arguments: `@volume 40`, `@music pause`.
                     self.music(wid, &b, rest);
+                } else if b == "command_to_black_magic" {
+                    self.set_cmd_chord(wid, rest);
                 } else {
                     self.builtin(wid, &b);
                 }

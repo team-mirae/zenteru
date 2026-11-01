@@ -116,6 +116,27 @@ class ZshTests(Fixture, unittest.TestCase):
         self.assertEqual(self.sh.buffer_check(), "ls 개쳐")
 
 
+    # Plain Tab (zsh's own completion, no zenteru menu) must keep working with
+    # the bridge loaded. The test shell's .zshrc has no compinit, like a fresh
+    # macOS account; `zle -C` used to leave such shells with no completion.
+    def _plain_tab(self, typed):
+        self.sh.send(typed + "\t")
+        self.sh.drain(0.8)
+        return self.sh.buffer_check()
+
+    def test_plain_tab_without_compinit(self):
+        self.assertRegex(self._plain_tab("cd Docu"), r"^cd Documents/?$")
+
+    def test_plain_tab_after_capture(self):
+        self.sh.complete("ls ")
+        self.sh.clear_line()
+        self.assertRegex(self._plain_tab("cd Docu"), r"^cd Documents/?$")
+
+    def test_plain_tab_with_compinit_run_later(self):
+        self.sh.send("autoload -Uz compinit; compinit -u -D\r")
+        self.sh.drain(1.0)
+        self.assertRegex(self._plain_tab("cd Docu"), r"^cd Documents/?$")
+
 @unittest.skipUnless(shutil.which("bash"), "bash not installed")
 class BashTests(Fixture, unittest.TestCase):
     """The completion logic runs on any bash (it's called directly here); the

@@ -217,6 +217,12 @@ _zenteru_cc_query_widget() {
 zle -N _zenteru_cc_widget
 zle -N _zenteru_cc_query_widget
 zle -C _zenteru_cc_capture complete-word _zenteru_cc_main
+# `zle -C` loads zsh/complete, and from then on zsh no longer autoloads the
+# old compctl system that plain Tab uses when compinit was never run (no
+# compinit in .zshrc, the macOS default). Without this, Tab completes nothing
+# in such shells. Load compctl now unless compinit is already set up; a
+# compinit run later (in .zshrc, or by the capture above) still takes over.
+(( ${+_comps} )) || zmodload -i zsh/compctl 2>/dev/null
 () {
   local km
   for km in emacs viins vicmd; do

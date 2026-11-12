@@ -93,6 +93,28 @@ struct Saved {
     gl: usize,
 }
 
+/// How many alternate screens can be set aside at once (a full-screen
+/// program inside another inside another…).
+const MAX_ALT_DEPTH: usize = 8;
+
+/// An outer program's alternate screen, set aside while a program it
+/// started has the alternate screen (see `Terminal::enter_alt`).
+#[derive(Clone, Debug)]
+struct AltFrame {
+    rows: Vec<Row>,
+    cursor: Cursor,
+    saved: Saved,
+    /// Scroll region (top, bottom).
+    region: (usize, usize),
+}
+
+fn fingerprint(rows: &[Row]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rows.hash(&mut h);
+    h.finish()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PromptPhase {
     #[default]
@@ -138,6 +160,13 @@ pub struct Terminal {
     primary: Vec<Row>,
     alt: Vec<Row>,
     alt_active: bool,
+    /// Alternate screens of outer programs, innermost last.
+    alt_stack: Vec<AltFrame>,
+    /// Fingerprint of the alternate screen as it was last handed back to an
+    /// outer program; still matching means nothing was drawn since.
+    alt_restored: Option<u64>,
+    /// The alternate screen was entered with a cursor save (1049).
+    alt_saved_cursor: bool,
     pub scrollback: VecDeque<Row>,
     pub scrollback_limit: usize,
     /// Lines dropped off the top of scrollback, ever. Absolute line `n` is
@@ -190,6 +219,9 @@ impl Terminal {
             primary: (0..rows).map(|_| Row::new(cols, &a)).collect(),
             alt: (0..rows).map(|_| Row::new(cols, &a)).collect(),
             alt_active: false,
+            alt_stack: Vec::new(),
+            alt_restored: None,
+            alt_saved_cursor: false,
             scrollback: VecDeque::new(),
             scrollback_limit: DEFAULT_SCROLLBACK,
             dropped: 0,
@@ -802,15 +834,42 @@ impl Terminal {
         self.gl = s.gl;
     }
 
+    /// Switch to the alternate screen.
+    ///
+    /// Asked for while it is already up, a full-screen program has started
+    /// inside another one that never left it (Claude Code opening an editor
+    /// it takes for a GUI one, say). The outer program's screen is then set
+    /// aside and put back when the inner one leaves (`leave_alt`), so the
+    /// outer program finds what it drew. Dropping to the primary screen
+    /// instead would leave it drawing over the shell's old output until
+    /// something made it repaint everything, such as resizing the window.
     fn enter_alt(&mut self, save: bool, clear: bool) {
         if self.alt_active {
-            return;
+            // Nothing to set aside when the screen is empty, or when the
+            // program asking is the one that just got it back and is
+            // starting over (it thinks it is on the primary screen, and
+            // will leave only once): that is a plain clear, as in xterm.
+            let own = self.alt_restored.take() == Some(fingerprint(&self.alt));
+            let empty = self.alt.iter().all(|r| r.used() == 0);
+            if !own && !empty && self.alt_stack.len() < MAX_ALT_DEPTH {
+                self.alt_stack.push(AltFrame {
+                    rows: self.alt.clone(),
+                    cursor: self.cursor.clone(),
+                    saved: self.saved[1].clone(),
+                    region: (self.top, self.bottom),
+                });
+            }
+            if save {
+                self.save_cursor();
+            }
+        } else {
+            if save {
+                self.save_cursor();
+            }
+            self.alt_active = true;
+            self.alt_saved_cursor = save;
+            self.display_offset = 0;
         }
-        if save {
-            self.save_cursor();
-        }
-        self.alt_active = true;
-        self.display_offset = 0;
         if clear {
             for r in 0..self.rows {
                 let b = Row::new(self.cols, &Attrs::default());
@@ -819,13 +878,48 @@ impl Terminal {
         }
     }
 
+    /// Leave the alternate screen: back to the outer program's screen if
+    /// one was set aside, to the primary screen otherwise.
     fn leave_alt(&mut self, restore: bool) {
         if !self.alt_active {
             return;
         }
+        if let Some(f) = self.alt_stack.pop() {
+            let (cols, rows) = (self.cols, self.rows);
+            let same_size = f.rows.len() == rows && f.rows.first().is_some_and(|r| r.cells.len() == cols);
+            self.alt = f.rows;
+            self.alt.truncate(rows);
+            self.alt.resize(rows, Row::new(cols, &Attrs::default()));
+            for r in &mut self.alt {
+                r.resize(cols);
+            }
+            self.cursor = f.cursor;
+            if self.cursor.x >= cols || self.cursor.y >= rows {
+                self.cursor.x = self.cursor.x.min(cols - 1);
+                self.cursor.y = self.cursor.y.min(rows - 1);
+                self.cursor.pending_wrap = false;
+            }
+            self.saved[1] = f.saved;
+            (self.top, self.bottom) = if same_size { f.region } else { (0, rows - 1) };
+            self.alt_restored = Some(fingerprint(&self.alt));
+            return;
+        }
         self.alt_active = false;
+        self.alt_restored = None;
         if restore {
             self.restore_cursor();
+        }
+    }
+
+    /// A shell prompt is starting while the alternate screen is up: the
+    /// program that asked for it is gone without giving it back (killed, an
+    /// ssh connection that dropped). Go back to the primary screen, where
+    /// the prompt belongs, instead of staying stuck on a dead program.
+    fn abandon_alt(&mut self) {
+        if self.alt_active {
+            self.alt_stack.clear();
+            let restore = self.alt_saved_cursor;
+            self.leave_alt(restore);
         }
     }
 
@@ -1139,6 +1233,9 @@ impl Terminal {
     fn shell_mark(&mut self, rest: &str) {
         let mut parts = rest.split(';');
         let kind = parts.next().unwrap_or("");
+        if kind == "A" {
+            self.abandon_alt();
+        }
         let base = self.screen_base();
         match kind {
             "A" => {
@@ -1785,6 +1882,90 @@ mod tests {
         t.feed(b"\x1b[?1049hfull\x1b[?1049l");
         assert_eq!(lines(&t)[0], "hi");
         assert_eq!(t.cursor.x, 2);
+    }
+
+    #[test]
+    fn nested_alt_screen_gives_the_outer_program_its_screen_back() {
+        // A shell line, then an outer full-screen program (Claude Code)…
+        let mut t = term(12, 4, "$ outer\r\n");
+        t.feed(b"\x1b[?1049h\x1b[2J\x1b[HOUTER\r\nstatus\x1b[3;5H");
+        // …that starts an editor without leaving the alternate screen.
+        t.feed(b"\x1b[?1049h\x1b[Hedit");
+        assert!(t.alt_screen());
+        assert_eq!(lines(&t), ["edit", "", "", ""], "the inner program starts on a clear screen");
+        // The editor leaves: the outer program's screen and cursor are back.
+        t.feed(b"\x1b[?1049l");
+        assert!(t.alt_screen(), "still the outer program's alternate screen");
+        assert_eq!(lines(&t), ["OUTER", "status", "", ""]);
+        assert_eq!((t.cursor.x, t.cursor.y), (4, 2));
+        // It carries on drawing where it thinks it is, then opens the editor again.
+        t.feed(b"\x1b[2;1Hstatus 2\x1b[?1049h\x1b[Hagain\x1b[?1049l");
+        assert_eq!(lines(&t), ["OUTER", "status 2", "", ""]);
+        // The outer program leaves: the shell's screen, cursor where it was.
+        t.feed(b"\x1b[?1049l");
+        assert!(!t.alt_screen());
+        assert_eq!(lines(&t), ["$ outer", "", "", ""]);
+        assert_eq!((t.cursor.x, t.cursor.y), (0, 1));
+    }
+
+    #[test]
+    fn alt_screen_reentered_by_its_owner_is_left_once() {
+        // The outer program clears, hands over to an editor it knows (vim),
+        // and asks for the alternate screen again afterwards, as it would
+        // from the primary screen. Its single leave must end on the primary.
+        let mut t = term(12, 4, "$ outer\r\n");
+        t.feed(b"\x1b[?1049h\x1b[HOUTER");
+        t.feed(b"\x1b[2J\x1b[H\x1b[?1049hvim\x1b[?1049l");
+        assert!(!t.alt_screen(), "nothing was set aside: the editor's leave is a real one");
+        t.feed(b"\x1b[?1049h\x1b[2J\x1b[HOUTER again\x1b[?1049l");
+        assert!(!t.alt_screen());
+        assert_eq!(lines(&t)[0], "$ outer");
+        // Same, but without clearing first: the outer program's screen is
+        // set aside and given back; asking again before drawing anything is
+        // the owner starting over, not another nested program.
+        t.feed(b"\x1b[?1049h\x1b[HOUTER\x1b[?1049hvim\x1b[?1049l");
+        assert!(t.alt_screen());
+        t.feed(b"\x1b[?25l\x1b[?1049h\x1b[2J\x1b[HOUTER again\x1b[?1049l");
+        assert!(!t.alt_screen());
+        assert_eq!(lines(&t)[0], "$ outer");
+        // Asking twice up front and leaving once is still one leave.
+        t.feed(b"\x1b[?1049h\x1b[?1049hX\x1b[?1049l");
+        assert!(!t.alt_screen());
+    }
+
+    #[test]
+    fn nested_alt_screen_survives_a_resize() {
+        let mut t = term(12, 4, "");
+        t.feed(b"\x1b[?1049h\x1b[HOUTER\r\nrow 2\r\nrow 3\r\nrow 4\x1b[2;3r");
+        t.feed(b"\x1b[?1049h\x1b[r\x1b[Hinner");
+        t.resize(8, 3);
+        t.feed(b"\x1b[?1049l");
+        assert_eq!(lines(&t), ["OUTER", "row 2", "row 3"]);
+        assert!(t.cursor.y < 3 && t.cursor.x < 8);
+        // Margins from the old size are gone; scrolling uses the whole screen.
+        t.feed(b"\x1b[3;1H\n");
+        assert_eq!(lines(&t), ["row 2", "row 3", ""]);
+        // Same size: the outer program's scroll region comes back with it.
+        let mut t = term(12, 4, "");
+        t.feed(b"\x1b[?1049h\x1b[H1\r\n2\r\n3\r\n4\x1b[2;3r\x1b[?1049h\x1b[rinner\x1b[?1049l");
+        t.feed(b"\x1b[3;1H\n");
+        assert_eq!(lines(&t), ["1", "3", "", "4"]);
+    }
+
+    #[test]
+    fn shell_prompt_abandons_a_dead_programs_alt_screen() {
+        // vim over ssh, then the connection drops: no 1049l ever arrives.
+        let mut t = term(12, 4, "$ ssh host\r\n");
+        t.feed(b"\x1b[?1049h\x1b[Hremote vim\x1b[?1049h\x1b[Hnested");
+        assert!(t.alt_screen());
+        // The local shell's next prompt (OSC 133;A) lands on the primary screen.
+        t.feed(b"\x1b]133;A\x07$ ");
+        assert!(!t.alt_screen());
+        assert_eq!(lines(&t), ["$ ssh host", "$", "", ""]);
+        assert_eq!((t.cursor.x, t.cursor.y), (2, 1));
+        // And the next full-screen program gets a fresh alternate screen.
+        t.feed(b"\x1b[?1049hless\x1b[?1049l");
+        assert!(!t.alt_screen());
     }
 
     #[test]

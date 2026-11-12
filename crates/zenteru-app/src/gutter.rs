@@ -122,6 +122,8 @@ pub enum RainStyle {
     Drops,
     /// A fixed matrix of blocks; only their colours change.
     Blocks,
+    /// A contribution-graph style grid whose squares brighten and fade.
+    Heatmap,
     /// A plugin drives the block matrix (`gutter.set_frame`).
     Custom,
     Off,
@@ -132,6 +134,7 @@ impl RainStyle {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "drops" | "dots" | "dotted" | "default" => Self::Drops,
             "blocks" | "block" | "matrix" => Self::Blocks,
+            "heatmap" | "heat" | "activity" | "contributions" => Self::Heatmap,
             "custom" | "plugin" => Self::Custom,
             "off" | "none" => Self::Off,
             _ => return None,
@@ -142,8 +145,20 @@ impl RainStyle {
         match self {
             Self::Drops => "drops",
             Self::Blocks => "blocks",
+            Self::Heatmap => "heatmap",
             Self::Custom => "custom",
             Self::Off => "off",
+        }
+    }
+
+    /// Milliseconds between frames, in the key window or another one. The
+    /// heatmap's slow fades need fewer frames than falling rain.
+    pub fn frame_ms(self, key: bool) -> u128 {
+        match (self, key) {
+            (Self::Heatmap, true) => 50,
+            (Self::Heatmap, false) => 150,
+            (_, true) => 33,
+            (_, false) => 100,
         }
     }
 }
@@ -230,4 +245,157 @@ pub fn custom_rain(f: &mut Frame, x: f32, y: f32, w: f32, hgt: f32, cell_w: f32,
         let p = &px[i..i + 4];
         Some([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0])
     });
+}
+
+/// Columns of the heatmap: seven, like the weekdays of a contribution graph.
+pub const HEAT_COLS: u32 = 7;
+
+/// Opacity of the five activity levels, from none to most.
+const HEAT_ALPHA: [f32; 5] = [0.09, 0.30, 0.52, 0.76, 1.0];
+
+/// Geometry of the heatmap in an area: (rows, square px, gap px, left inset px).
+pub fn heatmap_dims(w: f32, hgt: f32, scale: f32) -> (u32, f32, f32, f32) {
+    let gap = (2.0 * scale).round().max(1.0);
+    let b = ((w + gap) / HEAT_COLS as f32 - gap).floor();
+    if b < 2.0 || hgt < b {
+        return (0, 0.0, gap, 0.0);
+    }
+    let rows = ((hgt + gap) / (b + gap)).floor() as u32;
+    let used = HEAT_COLS as f32 * (b + gap) - gap;
+    (rows, b, gap, ((w - used) / 2.0).floor().max(0.0))
+}
+
+/// Smooth value noise in 0..1 over a 3-D lattice.
+fn noise(x: f32, y: f32, z: f32) -> f32 {
+    let (xi, yi, zi) = (x.floor(), y.floor(), z.floor());
+    let ease = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (u, v, w) = (ease(x - xi), ease(y - yi), ease(z - zi));
+    let (xi, yi, zi) = (xi as i32, yi as i32, zi as i32);
+    let at = |dx: i32, dy: i32, dz: i32| {
+        h(((xi + dx) as u32).wrapping_mul(0x8DA6_B343) ^ ((yi + dy) as u32).wrapping_mul(0xD816_3841) ^ ((zi + dz) as u32).wrapping_mul(0xCB1A_B31F))
+    };
+    let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    mix(
+        mix(mix(at(0, 0, 0), at(1, 0, 0), u), mix(at(0, 1, 0), at(1, 1, 0), u), v),
+        mix(mix(at(0, 0, 1), at(1, 0, 1), u), mix(at(0, 1, 1), at(1, 1, 1), u), v),
+        w,
+    )
+}
+
+/// Activity of the square at (column, row) at time `t` (seconds): a level
+/// in 0..=4 that rests on the whole levels and eases from one to the next.
+pub fn heat_level(c: u32, r: u32, t: f32) -> f32 {
+    let (x, y) = (c as f32, r as f32);
+    // Busy and quiet stretches a few squares across that drift slowly, and
+    // a quicker shimmer from square to square.
+    let broad = noise(x * 0.42, y * 0.30, t * 0.11);
+    let fine = noise(x * 1.7 + 31.0, y * 1.3 + 7.0, t * 0.37 + 13.0);
+    let v = 0.58 * broad + 0.42 * fine;
+    // Like a real contribution graph, most squares are empty or pale.
+    let level = ((v - 0.40) / 0.36).clamp(0.0, 1.0) * 4.0;
+    let (whole, part) = (level.floor(), level.fract());
+    let e = ((part - 0.35) / 0.30).clamp(0.0, 1.0);
+    whole + e * e * (3.0 - 2.0 * e)
+}
+
+/// Where on the pink → violet gradient the square at (column, row) sits:
+/// pink towards the top and violet towards the bottom, like the rain, with
+/// slow patches that wander between the two.
+fn heat_hue(c: u32, r: u32, rows: u32, t: f32) -> f32 {
+    let down = (r as f32 + 0.5) / rows.max(1) as f32;
+    let wander = noise(c as f32 * 0.25 + 90.0, r as f32 * 0.10 + 40.0, t * 0.08 + 50.0);
+    (0.55 * down + 0.45 * ((wander - 0.5) * 1.8 + 0.5)).clamp(0.0, 1.0)
+}
+
+/// Heatmap: a grid of rounded squares in the style of a GitHub contribution
+/// graph, seven across. Each square's activity level rises and falls on its
+/// own, coloured along the zencode gradient; busier squares are more solid.
+#[allow(clippy::too_many_arguments)]
+pub fn heatmap(f: &mut Frame, x: f32, y: f32, w: f32, hgt: f32, scale: f32, t: f32, still: bool) {
+    let (rows, b, gap, inset) = heatmap_dims(w, hgt, scale);
+    // Reduce motion: one frame of it, standing still.
+    let t = if still { 0.0 } else { t };
+    for r in 0..rows {
+        for c in 0..HEAT_COLS {
+            let level = heat_level(c, r, t);
+            let lo = level.floor() as usize;
+            let hi = (lo + 1).min(HEAT_ALPHA.len() - 1);
+            let alpha = HEAT_ALPHA[lo] + (HEAT_ALPHA[hi] - HEAT_ALPHA[lo]) * (level - lo as f32);
+            let col = pal::gradient(heat_hue(c, r, rows, t));
+            f.round_rect(x + inset + c as f32 * (b + gap), y + r as f32 * (b + gap), b, b, (b * 0.22).max(1.0), rgba(col, alpha));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heatmap_fits_seven_squares_across() {
+        // An 11-cell gutter at 1× (8 px cells) and at 2×.
+        for (w, scale) in [(82.0, 1.0), (166.0, 2.0)] {
+            let (rows, b, gap, inset) = heatmap_dims(w, 400.0, scale);
+            assert!(rows > 10 && b >= 8.0 * scale, "{rows} rows of {b} px");
+            assert!(inset + HEAT_COLS as f32 * (b + gap) - gap <= w);
+            assert!(rows as f32 * (b + gap) - gap <= 400.0);
+        }
+        // Too narrow or too short: nothing, rather than slivers.
+        assert_eq!(heatmap_dims(10.0, 400.0, 1.0).0, 0);
+        assert_eq!(heatmap_dims(82.0, 4.0, 1.0).0, 0);
+    }
+
+    #[test]
+    fn heat_levels_look_like_a_contribution_graph() {
+        let mut count = [0usize; 5];
+        let mut moved = 0;
+        for r in 0..60 {
+            for c in 0..HEAT_COLS {
+                let (a, b) = (heat_level(c, r, 3.0), heat_level(c, r, 3.05));
+                assert!((0.0..=4.0).contains(&a));
+                // One frame later a square has barely changed: it fades, it doesn't flicker.
+                assert!((a - b).abs() < 0.5, "({c},{r}) jumped from {a} to {b}");
+                count[a.round() as usize] += 1;
+                if (heat_level(c, r, 30.0) - a).abs() > 0.5 {
+                    moved += 1;
+                }
+            }
+        }
+        let total: usize = count.iter().sum();
+        // Every level shows up, quiet squares outnumber busy ones, and it isn't frozen.
+        assert!(count.iter().all(|&n| n > 0), "{count:?}");
+        assert!(count[0] + count[1] > count[3] + count[4], "{count:?}");
+        assert!(count[0] < total * 3 / 4, "{count:?}");
+        assert!(moved > total / 4, "only {moved} of {total} squares changed in 27 s");
+    }
+
+    #[test]
+    fn heatmap_draws_gradient_squares_and_stands_still_on_request() {
+        let draw = |t: f32, still: bool| {
+            let mut f = Frame::new([0.0; 4]);
+            heatmap(&mut f, 6.0, 40.0, 82.0, 300.0, 1.0, t, still);
+            f.insts
+        };
+        let a = draw(1.0, false);
+        let (rows, b, ..) = heatmap_dims(82.0, 300.0, 1.0);
+        assert_eq!(a.len(), (rows * HEAT_COLS) as usize);
+        assert!(a.iter().all(|i| i.rect[2] == b && i.rect[3] == b && i.radius > 0.0));
+        assert!(a.iter().all(|i| i.rect[0] >= 6.0 && i.rect[0] + b <= 88.0 && i.rect[1] >= 40.0 && i.rect[1] + b <= 340.0));
+        // Pink at the top, violet at the bottom (red falls, blue rises), on average.
+        let avg = |rows: &[crate::render::Inst], ch: usize| rows.iter().map(|i| i.color[ch]).sum::<f32>() / rows.len() as f32;
+        let (top, bottom) = (&a[..a.len() / 4], &a[a.len() * 3 / 4..]);
+        assert!(avg(top, 0) > avg(bottom, 0) && avg(top, 2) < avg(bottom, 2));
+        // It moves over time, except with Reduce Motion.
+        let differs = |x: &[crate::render::Inst], y: &[crate::render::Inst]| x.iter().zip(y).any(|(p, q)| p.color != q.color);
+        assert!(differs(&a, &draw(9.0, false)));
+        assert!(!differs(&draw(1.0, true), &draw(9.0, true)));
+    }
+
+    #[test]
+    fn rain_style_names_round_trip() {
+        for s in [RainStyle::Drops, RainStyle::Blocks, RainStyle::Heatmap, RainStyle::Custom, RainStyle::Off] {
+            assert_eq!(RainStyle::parse(s.name()), Some(s));
+        }
+        assert_eq!(RainStyle::parse("nope"), None);
+    }
 }

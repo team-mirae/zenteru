@@ -726,6 +726,14 @@ impl App {
             s.window_id = target.clone();
         }
         self.relayout(&target);
+        // `relayout` resizes sessions only when the window's own grid
+        // changes; a tab arriving from a window of another size has to be
+        // fitted to this one (it stayed at its old size until the next
+        // window resize).
+        let l = &self.windows[ti2].layout;
+        if let Some(s) = self.sessions.get(&sid).filter(|_| l.cols > 0 && l.rows > 0) {
+            s.s.resize(l.cols as u16, l.rows as u16, (l.cell_w as u16, l.cell_h as u16));
+        }
         self.emit("layout", None, Json::obj());
     }
 
@@ -803,10 +811,11 @@ impl App {
                 self.windows.iter_mut().for_each(|w| w.dirty = true);
             }
         }
-        // Rain: ~30 fps in the key window, ~10 fps elsewhere.
+        // Rain: ~30 fps in the key window, ~10 fps elsewhere (the heatmap
+        // fades slowly and takes fewer).
         for w in &mut self.windows {
             if w.rain {
-                let every = if w.handle.is_key() { 33 } else { 100 };
+                let every = self.rain_style.frame_ms(w.handle.is_key());
                 if w.last_frame.is_none_or(|t| t.elapsed().as_millis() >= every) {
                     w.dirty = true;
                 }
@@ -854,7 +863,9 @@ impl App {
         let mut exited = Vec::new();
         let sids: Vec<String> = self.sessions.keys().cloned().collect();
         let screen_subs = self.api.as_ref().is_some_and(|a| a.has_subscribers("screen_update"));
+        let mut background_changed: Vec<String> = Vec::new();
         for sid in sids {
+            let on_show = self.windows.iter().any(|w| w.active_session() == Some(sid.as_str()));
             let Some(s) = self.sessions.get_mut(&sid) else { continue };
             if s.s.exited.load(Ordering::Acquire) {
                 exited.push(s.tab_id.clone());
@@ -880,7 +891,15 @@ impl App {
                     win.dirty = true;
                 }
             }
-            if s.s.dirty.load(Ordering::Acquire) {
+            // Drawing clears the flag of the tab on show. A tab in the
+            // background is never drawn, so its flag is taken here: its
+            // window is redrawn once (title, bell) instead of on every tick
+            // for as long as the tab stays in the background.
+            let changed = if on_show { s.s.dirty.load(Ordering::Acquire) } else { s.s.dirty.swap(false, Ordering::AcqRel) };
+            if changed && !on_show {
+                background_changed.push(s.window_id.clone());
+            }
+            if changed {
                 // Warnings depend on what's on screen.
                 let (line_before_cursor, edit) = {
                     let t = s.s.term.lock().unwrap();
@@ -991,6 +1010,11 @@ impl App {
                 }
             }
             self.last_screen_emit = Instant::now();
+        }
+        for w in &mut self.windows {
+            if background_changed.contains(&w.id) {
+                w.dirty = true;
+            }
         }
         for tid in exited {
             self.close_tab(&tid);
@@ -3281,7 +3305,7 @@ impl App {
                     self.set_rain_style(style);
                     empty()
                 }
-                None => Some(Err(("bad_request", "style must be drops, blocks, custom or off".into()))),
+                None => Some(Err(("bad_request", "style must be drops, blocks, heatmap, custom or off".into()))),
             },
             "gutter.set_frame" => {
                 let (w, h) = (p.get("width").as_i64().unwrap_or(0), p.get("height").as_i64().unwrap_or(0));
@@ -3400,6 +3424,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.volume", "Music: volume up | down | min | max | 0–100 | 0.00–1.00", "volume"),
     ("zenteru.rain_drops", "Gutter rain: drops (default)", "rain-drops"),
     ("zenteru.rain_blocks", "Gutter rain: blocks (fixed matrix)", "rain-blocks"),
+    ("zenteru.rain_heatmap", "Gutter rain: heatmap (activity squares)", "rain-heatmap"),
     ("zenteru.rain_custom", "Gutter rain: custom (plugin driver)", "rain-custom"),
     ("zenteru.rain_off", "Gutter rain: off", "rain-off"),
 ];

@@ -312,6 +312,7 @@ pub fn draw(app: &mut App, wid: &str) {
                     use crate::gutter::RainStyle;
                     match (rain_style, &rain_frame) {
                         (RainStyle::Drops, _) => crate::gutter::rain(&mut f, gx, l.term_y, gw, rain_h, ch, s, tsec, still),
+                        (RainStyle::Heatmap, _) => crate::gutter::heatmap(&mut f, gx, l.term_y, gw, rain_h, s, tsec, still),
                         (RainStyle::Custom, Some((fw, fh, px, _))) => crate::gutter::custom_rain(&mut f, gx, l.term_y, gw, rain_h, cw, s, *fw, *fh, px),
                         // Custom without a live driver falls back to blocks.
                         (RainStyle::Blocks | RainStyle::Custom, _) => crate::gutter::block_rain(&mut f, gx, l.term_y, gw, rain_h, cw, s, tsec, still),

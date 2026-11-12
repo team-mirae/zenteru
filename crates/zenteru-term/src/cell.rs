@@ -1,6 +1,6 @@
 //! Cells and rows.
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Color {
     #[default]
     Default,
@@ -36,7 +36,7 @@ pub struct Attrs {
     pub link: u16,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Cell {
     pub c: char,
     /// Further code points of the grapheme cluster (combining marks, ZWJ sequences).
@@ -96,7 +96,7 @@ impl Cell {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Row {
     pub cells: Vec<Cell>,
     /// The line continues on the next row (soft wrap).

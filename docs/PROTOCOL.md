@@ -119,9 +119,11 @@ In shell mode (not in the alternate screen) zenteru shows a gutter:
 
 ### Gutter rain (custom drivers)
 While a non-shell program has the terminal the gutter shows "rain" in one of
-four styles: `drops` (default), `blocks` (a fixed matrix whose block colours
-change), `custom` (driven by a plugin) or `off`. Built-ins `@rain-drops`,
-`@rain-blocks`, `@rain-custom`, `@rain-off` switch it (saved in
+five styles: `drops` (default), `blocks` (a fixed matrix whose block colours
+change), `heatmap` (a contribution-graph style grid, seven squares across,
+whose activity levels rise and fall), `custom` (driven by a plugin) or `off`.
+Built-ins `@rain-drops`, `@rain-blocks`, `@rain-heatmap`, `@rain-custom`,
+`@rain-off` switch it (saved in
 `~/Library/Application Support/zenteru/settings.json`; `ZENTERU_RAIN`
 overrides).
 

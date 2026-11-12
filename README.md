@@ -73,9 +73,11 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
   While another program has the terminal (Claude Code, vim, a build), the
   gutter shows zencode-gradient rain instead, which becomes a still gradient
   with Reduce Motion on. A 24-hour clock and the date sit at the bottom.
-  The rain has four styles: `@rain-drops`, `@rain-blocks` (a fixed matrix of
-  blocks that change colour), `@rain-custom` (a Python `GutterDriver` paints
-  the matrix, see [docs/PYTHON_API.md](docs/PYTHON_API.md)) and `@rain-off`.
+  The rain has five styles: `@rain-drops`, `@rain-blocks` (a fixed matrix of
+  blocks that change colour), `@rain-heatmap` (squares seven across, like a
+  GitHub contribution graph, whose activity levels rise and fall in the
+  gradient), `@rain-custom` (a Python `GutterDriver` paints the matrix, see
+  [docs/PYTHON_API.md](docs/PYTHON_API.md)) and `@rain-off`.
 - **ゼ splash.** At launch, and on `@info`, `@version` or `@zenteru`,
   zenteru prints ゼ in the gradient as half-block art, with its version and
   a few system facts beside it (fastfetch style). The shell integration

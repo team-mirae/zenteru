@@ -204,6 +204,8 @@ pub struct Terminal {
     /// Absolute line where the screen started after the last `clear`
     /// (ED 2 / ED 3). Resizing never pulls lines above it back on screen.
     pub screen_floor: Option<u64>,
+    /// ED 3 erased the scrollback and nothing has been printed since.
+    scrollback_just_erased: bool,
 }
 
 const DEFAULT_SCROLLBACK: usize = 10_000;
@@ -251,6 +253,7 @@ impl Terminal {
             user_vars: Vec::new(),
             generation: 0,
             screen_floor: None,
+            scrollback_just_erased: false,
         }
     }
 
@@ -563,6 +566,19 @@ impl Terminal {
         }
     }
 
+    /// Cells are about to be inserted or removed at column `x`: a zenkaku
+    /// character lying across that boundary is cut in two, so both of its
+    /// halves go. One that starts at `x` is left whole and moves with the
+    /// rest of the line.
+    fn split_wide(&mut self, y: usize, x: usize) {
+        let a = self.erase_attrs();
+        let row = &mut self.grid()[y];
+        if x > 0 && x < row.cells.len() && row.cells[x].is_spacer() {
+            row.cells[x - 1] = Cell::blank(&a);
+            row.cells[x] = Cell::blank(&a);
+        }
+    }
+
     fn print_char(&mut self, c: char) {
         let c = if self.charsets[self.gl] == Charset::DecGraphics { dec_graphics(c) } else { c };
         let w = char_width(c);
@@ -570,6 +586,7 @@ impl Terminal {
             self.combine(c);
             return;
         }
+        self.scrollback_just_erased = false;
         let cols = self.cols;
         if self.cursor.pending_wrap && self.modes.autowrap {
             let y = self.cursor.y;
@@ -594,6 +611,7 @@ impl Terminal {
         }
         let (x, y) = (self.cursor.x, self.cursor.y);
         if self.modes.insert {
+            self.split_wide(y, x);
             let a = self.erase_attrs();
             let row = &mut self.grid()[y];
             for _ in 0..w {
@@ -658,13 +676,13 @@ impl Terminal {
         self.cursor.pending_wrap = false;
     }
 
+    /// CUU / CUD: the cursor stops at the margin it is moving towards, and
+    /// at the edge of the screen once it is already past that margin.
     fn move_rel(&mut self, dy: isize) {
-        let (lo, hi) = if self.cursor.y >= self.top && self.cursor.y <= self.bottom {
-            (self.top, self.bottom)
-        } else {
-            (0, self.rows - 1)
-        };
-        self.cursor.y = (self.cursor.y as isize + dy).clamp(lo as isize, hi as isize) as usize;
+        let y = self.cursor.y;
+        let lo = if y >= self.top { self.top } else { 0 };
+        let hi = if y <= self.bottom { self.bottom } else { self.rows - 1 };
+        self.cursor.y = (y as isize + dy).clamp(lo as isize, hi as isize) as usize;
         self.cursor.pending_wrap = false;
     }
 
@@ -703,9 +721,12 @@ impl Terminal {
             }
             2 => {
                 // Like most terminals, push a non-empty primary screen into
-                // scrollback instead of losing it (`clear`).
+                // scrollback instead of losing it. Not when the scrollback
+                // itself was erased just before: that is `clear` (E3, home,
+                // ED 2 on macOS) or ⌘K followed by the shell's Ctrl+L, and
+                // everything is meant to go.
                 if !self.alt_active {
-                    let used = self.primary.iter().rposition(|r| r.used() > 0);
+                    let used = self.primary.iter().rposition(|r| r.used() > 0).filter(|_| !self.scrollback_just_erased);
                     if let Some(last) = used {
                         let mut rows = self.primary[..=last].to_vec();
                         // What was on screen ends here: don't let reflow join
@@ -733,6 +754,7 @@ impl Terminal {
                 }
                 self.display_offset = 0;
                 self.prompt.marks.clear();
+                self.scrollback_just_erased = true;
             }
             _ => {}
         }
@@ -789,7 +811,7 @@ impl Terminal {
     fn insert_chars(&mut self, n: usize) {
         let (x, y) = (self.cursor.x, self.cursor.y);
         let a = self.erase_attrs();
-        self.unsplit(y, x);
+        self.split_wide(y, x);
         let cols = self.cols;
         let row = &mut self.grid()[y];
         let n = n.min(cols - x);
@@ -806,12 +828,10 @@ impl Terminal {
     fn delete_chars(&mut self, n: usize) {
         let (x, y) = (self.cursor.x, self.cursor.y);
         let a = self.erase_attrs();
-        self.unsplit(y, x);
+        self.split_wide(y, x);
         let cols = self.cols;
         let n = n.min(cols - x);
-        if x + n < cols {
-            self.unsplit(y, x + n);
-        }
+        self.split_wide(y, x + n);
         let row = &mut self.grid()[y];
         row.cells.drain(x..x + n);
         row.cells.resize(cols, Cell::blank(&a));
@@ -920,6 +940,11 @@ impl Terminal {
             self.alt_stack.clear();
             let restore = self.alt_saved_cursor;
             self.leave_alt(restore);
+            // Its scroll region died with it: left in place, the shell's
+            // output would scroll inside it and never clear the rows outside.
+            self.top = 0;
+            self.bottom = self.rows - 1;
+            self.modes.origin = false;
         }
     }
 
@@ -1342,7 +1367,12 @@ impl Perform for Terminal {
         match (inter, action) {
             ([], '@') => self.insert_chars(n(0)),
             ([], 'A') => self.move_rel(-(n(0) as isize)),
-            ([], 'B') | ([], 'e') => self.move_rel(n(0) as isize),
+            ([], 'B') => self.move_rel(n(0) as isize),
+            ([], 'e') => {
+                let (lo, hi) = if self.modes.origin { (self.top, self.bottom) } else { (0, self.rows - 1) };
+                self.cursor.y = (self.cursor.y + n(0)).clamp(lo, hi);
+                self.cursor.pending_wrap = false;
+            }
             ([], 'C') | ([], 'a') => {
                 let x = self.cursor.x + n(0);
                 self.set_x(x)
@@ -1860,6 +1890,73 @@ mod tests {
     }
 
     #[test]
+    fn inserting_before_a_zenkaku_char_keeps_it_whole() {
+        // ICH with the cursor on the first half: the character moves right intact.
+        let t = term(12, 1, "ab한글\x1b[3G\x1b[2@");
+        assert_eq!(lines(&t)[0], "ab  한글");
+        assert!(t.screen()[0].cells[4].is_wide() && t.screen()[0].cells[5].is_spacer());
+        // On the second half the character is split, and both halves go.
+        let t = term(12, 1, "ab한글\x1b[4G\x1b[1@");
+        assert_eq!(lines(&t)[0], "ab   글");
+        assert!(!t.screen()[0].cells.iter().take(5).any(|c| c.is_wide() || c.is_spacer()));
+        // The same split when typing in insert mode.
+        let t = term(12, 1, "한글\x1b[2G\x1b[4hx");
+        assert_eq!(lines(&t)[0], " x 글");
+        assert!(!t.screen()[0].cells.iter().take(3).any(|c| c.is_wide() || c.is_spacer()));
+    }
+
+    #[test]
+    fn deleting_before_a_zenkaku_char_keeps_it_whole() {
+        let t = term(12, 1, "ab한글\x1b[1G\x1b[2P");
+        assert_eq!(lines(&t)[0], "한글");
+        assert!(t.screen()[0].cells[0].is_wide() && t.screen()[0].cells[1].is_spacer());
+        // Deleting half of one leaves a blank, not an orphaned half.
+        let t = term(12, 1, "ab한글\x1b[1G\x1b[3P");
+        assert_eq!(lines(&t)[0], " 글");
+        assert!(!t.screen()[0].cells[0].is_spacer() && t.screen()[0].cells[1].is_wide());
+        // What is typed over the moved character replaces all of it.
+        let t = term(12, 1, "ab한글\x1b[1G\x1b[2P\x1b[2Gx");
+        assert_eq!(lines(&t)[0], " x글");
+    }
+
+    #[test]
+    fn cursor_up_and_down_stop_at_the_margins() {
+        // From above the region, down stops at the bottom margin.
+        let t = term(10, 10, "\x1b[5;9r\x1b[20B");
+        assert_eq!(t.cursor.y, 8);
+        let t = term(10, 10, "\x1b[5;9r\x1b[20E");
+        assert_eq!(t.cursor.y, 8);
+        // From below it, up stops at the top margin.
+        let t = term(10, 10, "\x1b[2;5r\x1b[10;1H\x1b[20A");
+        assert_eq!(t.cursor.y, 1);
+        // Outside the region and moving away from it: the screen edge.
+        let t = term(10, 10, "\x1b[2;5r\x1b[8;1H\x1b[20B");
+        assert_eq!(t.cursor.y, 9);
+        let t = term(10, 10, "\x1b[5;9r\x1b[2;1H\x1b[20A");
+        assert_eq!(t.cursor.y, 0);
+        // VPR is a position, not a scroll-region move.
+        let t = term(10, 6, "\x1b[1;3r\x1b[3e");
+        assert_eq!(t.cursor.y, 3);
+    }
+
+    #[test]
+    fn clear_leaves_nothing_in_scrollback() {
+        // macOS `clear`, and ⌘K followed by the shell's Ctrl+L: scrollback
+        // erased first, then the screen.
+        let mut t = term(10, 3, "1\r\n2\r\n3\r\n4\r\n5");
+        t.feed(b"\x1b[3J\x1b[H\x1b[2J");
+        assert_eq!(t.scrollback.len(), 0);
+        assert_eq!(lines(&t), ["", "", ""]);
+        t.feed(b"$ ");
+        t.resize(10, 6);
+        assert_eq!(lines(&t)[0], "$", "nothing to pull back");
+        // Once something else has been printed, erasing the screen keeps it.
+        let mut t = term(10, 3, "1\r\n2\r\n3\r\n4\r\n5");
+        t.feed(b"\x1b[3Jx\x1b[H\x1b[2J");
+        assert_eq!(t.scrollback.len(), 3);
+    }
+
+    #[test]
     fn combining_and_jamo_attach() {
         let t = term(10, 1, "e\u{301}\u{1112}\u{1161}\u{11AB}");
         assert_eq!(lines(&t)[0], "e\u{301}\u{1112}\u{1161}\u{11AB}");
@@ -1966,6 +2063,12 @@ mod tests {
         // And the next full-screen program gets a fresh alternate screen.
         t.feed(b"\x1b[?1049hless\x1b[?1049l");
         assert!(!t.alt_screen());
+        // A scroll region the dead program had set goes with it: the shell's
+        // output scrolls the whole screen again.
+        let mut t = term(12, 4, "$ top\r\n");
+        t.feed(b"\x1b[?1049h\x1b[2;3r\x1b[Hdead");
+        t.feed(b"\x1b]133;A\x07$ a\r\nb\r\nc\r\nd");
+        assert_eq!(lines(&t), ["$ a", "b", "c", "d"]);
     }
 
     #[test]

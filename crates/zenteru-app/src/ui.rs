@@ -131,7 +131,6 @@ pub fn draw(app: &mut App, wid: &str) {
     // ---- tab bar ------------------------------------------------------
     // The whole top bar is the zencode gradient; traffic lights sit on it.
     f.gradient_rect(0.0, 0.0, l.w, l.tabbar_h, 0.0, c(pal::GRADIENT_FROM), grad_to());
-    let bar_at = |x: f32| c(pal::gradient(x / l.w.max(1.0)));
     let start = (TRAFFIC_LIGHTS_PT as f32 * s).round();
     let new_w = 34.0 * s;
     let n = win.tabs.len().max(1);
@@ -156,18 +155,7 @@ pub fn draw(app: &mut App, wid: &str) {
             active_x = Some(x);
         } else {
             if hovered {
-                // Keep clear of the active tab's curved feet, which are
-                // painted over in the bar colour and would cut a dot out
-                // of the highlight.
-                let (mut hx, mut hw) = (x + 3.0 * s, tab_w - 6.0 * s);
-                if i + 1 == win.active {
-                    hw -= r;
-                }
-                if i == win.active + 1 {
-                    hx += r;
-                    hw -= r;
-                }
-                f.round_rect(hx, tab_top + 2.0 * s, hw, tab_h - 7.0 * s, 7.0 * s, rgba(Rgb(255, 255, 255), 0.22));
+                f.round_rect(x + 3.0 * s, tab_top + 2.0 * s, tab_w - 6.0 * s, tab_h - 7.0 * s, 7.0 * s, rgba(Rgb(255, 255, 255), 0.22));
             } else if i + 1 != win.active && i + 1 < win.tabs.len() {
                 f.rect(x + tab_w - 1.0 * s, tab_top + 9.0 * s, 1.0 * s, tab_h - 18.0 * s, rgba(pal::ON_GRADIENT, 0.3));
             }
@@ -215,12 +203,11 @@ pub fn draw(app: &mut App, wid: &str) {
         let tab = &win.tabs[i];
         let x = active_x.unwrap_or(start + i as f32 * tab_w);
         f.round_rect(x, tab_top, tab_w, tab_h + r, r, c(pal::BG));
-        // Chrome's outward curves at the tab's feet: BG squares carved by
-        // gradient-coloured circles.
-        f.rect(x - r, l.tabbar_h - r, r, r, c(pal::BG));
-        f.round_rect(x - 2.0 * r, l.tabbar_h - 2.0 * r, 2.0 * r, 2.0 * r, r, bar_at(x - r));
-        f.rect(x + tab_w, l.tabbar_h - r, r, r, c(pal::BG));
-        f.round_rect(x + tab_w, l.tabbar_h - 2.0 * r, 2.0 * r, 2.0 * r, r, bar_at(x + tab_w + r));
+        // Chrome's outward curves at the tab's feet. They paint only the
+        // curve itself, so the neighbours' titles and hover highlights
+        // underneath stay whole.
+        f.concave_corner(x - r, l.tabbar_h - r, r, false, c(pal::BG));
+        f.concave_corner(x + tab_w, l.tabbar_h - r, r, true, c(pal::BG));
         // Cover the corner patches back with the tab colour at the bottom edge.
         f.rect(x, l.tabbar_h - 1.0, tab_w, 1.0, c(pal::BG));
         f.gradient_rect(x + r * 0.6, tab_top, tab_w - r * 1.2, 2.0 * s, 1.0 * s, c(pal::GRADIENT_FROM), grad_to());

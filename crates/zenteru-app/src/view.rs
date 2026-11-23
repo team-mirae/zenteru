@@ -308,7 +308,7 @@ define_class!(
             self.on_key_down(event);
         }
 
-        // Left ⌘ + right ⌘ and left ⌥ + right ⌥ (src/chord.rs).
+        // ⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ (src/chord.rs).
         #[unsafe(method(flagsChanged:))]
         fn flags_changed(&self, event: &NSEvent) {
             let wid = self.wid();
@@ -1199,8 +1199,8 @@ fn build_menu(d: &AppDelegate) {
             sep(),
             b("Focus Side Panel", "`", NSEventModifierFlags::Control, "focus_panel"),
             b("Line Numbers (ゼロ / codes)", "l", NSEventModifierFlags::Command | NSEventModifierFlags::Shift, "toggle_gutter"),
-            b("Left ⌘ + Right ⌘ Opens Black Magic", "", NSEventModifierFlags::empty(), "command_to_black_magic"),
-            b("Left ⌥ + Right ⌥ Opens Agentic Helper", "", NSEventModifierFlags::empty(), "option_to_agent"),
+            b("⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ Open Black Magic", "", NSEventModifierFlags::empty(), "command_to_black_magic"),
+            b("Left ⌥ + Right ⌥ Opens Agentic Helper (If Any)", "", NSEventModifierFlags::empty(), "option_to_agent"),
             item("Enter Full Screen", Some(sel!(toggleFullScreen:)), "f", NSEventModifierFlags::Command | NSEventModifierFlags::Control, d, None),
         ],
     );

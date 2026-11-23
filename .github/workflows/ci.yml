@@ -25,5 +25,4 @@ jobs:
       - name: Python tests
         run: |
           python3 -m unittest discover -s python/tests
-          python3 -m unittest discover -s plugins/hmxv/tests
           python3 -m unittest discover -s plugins/complete/tests

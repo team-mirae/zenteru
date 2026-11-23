@@ -5,20 +5,19 @@
 //! Enter routes the line:
 //!   1. a built-in command (the old palette commands)   → run it
 //!   2. a plugin command (by `name`, handler or title)  → that plugin
-//!   3. anything else → the agentic helper (e.g. hmxv), if one is
-//!      registered (`rpc.register kind:"agent"`), with the whole line
+//!   3. anything else → the agentic helper, if a plugin registered one
+//!      (`rpc.register kind:"agent"`), with the whole line
 //!   4. no helper → "unknown command"; the bar stays open.
 //!
-//! `@@` types a literal `@`. `help` and `hmxv` are reserved for hmxv.
+//! `@@` types a literal `@`.
 
 use zenteru_term::input::{Key, Mods};
 use zenteru_term::json::Json;
 
 use crate::app::{App, Palette};
 
-/// Command names a plugin may only claim if it says hello as the owner
-/// ("" = zenteru's own built-ins: no plugin may claim them).
-const RESERVED: &[(&str, &str)] = &[("help", "hmxv"), ("hmxv", "hmxv"), ("info", ""), ("trim", ""), ("command-to-black-magic", ""), ("option-to-agent", ""), ("version", ""), ("zenteru", ""), ("music", ""), ("play", ""), ("pause", ""), ("mute", ""), ("unmute", ""), ("volume", "")];
+/// zenteru's own command names: no plugin may claim them.
+const RESERVED: &[&str] = &["info", "trim", "command-to-black-magic", "option-to-agent", "version", "zenteru", "music", "play", "pause", "mute", "unmute", "volume"];
 
 pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh", "-zsh", "-bash"];
 pub const REMOTES: &[&str] = &["ssh", "mosh-client", "mosh", "et", "autossh", "tsh"];
@@ -44,10 +43,8 @@ impl App {
             for r in api.registrations("command") {
                 let title = r.params.get("title").as_str().unwrap_or(&r.handler).to_string();
                 let mut name = r.params.get("name").as_str().map(str::to_lowercase).unwrap_or_else(|| r.handler.to_lowercase());
-                if let Some((_, owner)) = RESERVED.iter().find(|(n, _)| *n == name) {
-                    if api.conn_name(r.conn) != *owner {
-                        name = r.handler.to_lowercase();
-                    }
+                if RESERVED.contains(&name.as_str()) {
+                    name = r.handler.to_lowercase();
                 }
                 out.push(Cmd { handler: r.handler.clone(), title, name, builtin: false });
             }
@@ -219,11 +216,7 @@ impl App {
             return true;
         }
         // Unknown: hand the whole line to an agentic helper, if any.
-        let agent = self.api.as_ref().and_then(|a| {
-            let regs = a.registrations("agent");
-            regs.iter().max_by_key(|r| r.params.get("priority").as_i64().unwrap_or(0)).cloned()
-        });
-        if let Some(reg) = agent {
+        if let Some(reg) = self.top_agent() {
             let w = self.win(wid);
             let tid = w.as_ref().and_then(|w| w.tabs.get(w.active)).map(|t| t.id.clone());
             let sid = w.and_then(|w| w.active_session()).map(String::from);

@@ -177,15 +177,14 @@ Kinds:
   `"cmd+shift+e"` optionally binds it. Invoked with
   `args: {session_id, window_id, tab_id}` plus, from Black Magic,
   `{line, argv, source: "black_magic"}` (the text after the name). Return
-  value ignored. The names `help` and `hmxv` are reserved for the plugin that
-  says hello as `hmxv`.
+  value ignored.
 * `agent` — an **agentic helper** (Consumer<String>): Black Magic lines that
   match no command go to the registered helper with the highest `priority`,
   as `args: {text, session_id, window_id, tab_id, source: "black_magic"}`.
   Left ⌥ + right ⌥ calls one helper (the default from
   `@option-to-agent set-helper NAME`, else the most recently used, else
-  hmxv) with `text: ""` and `source: "open"`: show and focus your UI, ask
-  nothing. Answer at once and work in the background. Guide:
+  the one with the highest `priority`) with `text: ""` and
+  `source: "open"`: show and focus your UI, ask nothing. Answer at once and work in the background. Guide:
   [AGENTIC_HELPERS.md](AGENTIC_HELPERS.md).
 * `drop_handler` — called when files or image data are dropped onto a
   session, or pasted when the clipboard holds an image or files but no
@@ -266,8 +265,9 @@ hands the whole line to the `agent`; with no agent it says
 `unknown command` and stays open. ↑/↓ pick a suggestion, ⇥ completes it,
 Esc or ⌫ on an empty line closes.
 
-With `ZENTERU_DEBUG` set, `debug.type {text}` and `debug.key {key}` drive
-zenteru's own keyboard path (for tests); they don't exist otherwise.
+With `ZENTERU_DEBUG` set, `debug.type {text}`, `debug.key {key}` and
+`debug.flags {flags}` (raw modifier flags, for the chords) drive zenteru's
+own keyboard path (for tests); they don't exist otherwise.
 
 ### Password safety (core behaviour)
 * **Password fields** (tty echo off + canonical mode: sudo, ssh, `read -s`,

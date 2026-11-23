@@ -17,19 +17,21 @@ mod render;
 mod sudo_auth;
 mod textfield;
 mod ui;
+mod update;
 mod view;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("sudo-auth") => std::process::exit(sudo_auth::run(&args[1..])),
+        Some("update") => std::process::exit(update::run(&args[1..])),
         Some("info" | "version") => print!("{}", splash::render(&splash::cli_info())),
         Some("--version" | "-V") => {
             println!("{} {}", zenteru_text::brand::full_name(), zenteru_text::brand::VERSION);
         }
         Some("--help" | "-h") => {
             println!(
-                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru FILE|DIR…    run scripts in new tabs; open shells in folders\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru info         the ゼ splash with version and system facts\n  zenteru --version",
+                "{}\n\nUSAGE:\n  zenteru              open zenteru (or focus it)\n  zenteru FILE|DIR…    run scripts in new tabs; open shells in folders\n  zenteru sudo-auth    set up Touch ID / YubiKey for sudo\n  zenteru update       install the latest release (update VERSION for another)\n  zenteru info         the ゼ splash with version and system facts\n  zenteru --version",
                 zenteru_text::brand::full_name()
             );
         }

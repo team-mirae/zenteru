@@ -353,7 +353,10 @@ pub struct App {
     /// Left ⌘ + right ⌘ opens Black Magic (`@command-to-black-magic`).
     pub cmd_chord: crate::chord::Chord,
     pub cmd_chord_on: bool,
-    /// Left ⌥ + right ⌥ opens the agentic helper (`@option-to-agent`).
+    /// ⌥ + ⌘ does too, under the same switch: for keyboards with one ⌘.
+    pub alt_chord: crate::chord::Chord,
+    /// Left ⌥ + right ⌥ opens the agentic helper (`@option-to-agent`), or
+    /// Black Magic when there is none.
     pub opt_chord: crate::chord::Chord,
     pub opt_chord_on: bool,
     /// ⌘W / ⌘Q countdowns (src/close_guard.rs).
@@ -429,6 +432,7 @@ impl App {
                 .unwrap_or(crate::gutter::RainStyle::Drops),
             cmd_chord: crate::chord::Chord::command(),
             opt_chord: crate::chord::Chord::option(),
+            alt_chord: crate::chord::Chord::option_command(),
             close_guard: Default::default(),
             quit_requested: false,
             opt_chord_on: crate::settings::load().get("option_to_agent").as_bool().unwrap_or(true),
@@ -1234,6 +1238,7 @@ impl App {
     pub fn chord_input(&mut self) {
         self.cmd_chord.other_input();
         self.opt_chord.other_input();
+        self.alt_chord.other_input();
     }
 
     /// Plain ⌘W / ⌘Q pressed in window `wid` (raw modifierFlags).
@@ -1287,17 +1292,30 @@ impl App {
     pub fn chord_reset(&mut self) {
         self.cmd_chord.reset();
         self.opt_chord.reset();
+        self.alt_chord.reset();
     }
 
     /// A modifier key changed in window `wid` (raw modifierFlags).
     pub fn modifier_flags(&mut self, wid: &str, flags: u64) {
-        let cmd = self.cmd_chord.flags(flags);
+        let cmd = self.cmd_chord.flags(flags) | self.alt_chord.flags(flags);
         let opt = self.opt_chord.flags(flags);
         if cmd && self.cmd_chord_on {
             self.cmd_chord_fire(wid);
         }
-        if opt && self.opt_chord_on {
+        if opt {
+            self.opt_chord_fire(wid);
+        }
+    }
+
+    /// Left ⌥ + right ⌥: the agentic helper when that's switched on and
+    /// there is one (or a side panel has focus: back to the terminal),
+    /// otherwise Black Magic, like the ⌘ chords.
+    fn opt_chord_fire(&mut self, wid: &str) {
+        let Some((magic_open, panel)) = self.win(wid).map(|w| (w.palette.is_some(), w.focus == Focus::Panel)) else { return };
+        if self.opt_chord_on && !magic_open && (panel || self.pick_agent().is_some()) {
             self.open_agent(wid);
+        } else if self.cmd_chord_on {
+            self.cmd_chord_fire(wid);
         }
     }
 
@@ -1313,7 +1331,8 @@ impl App {
         }
     }
 
-    /// `@command-to-black-magic on | off | toggle` (no argument: toggle).
+    /// `@command-to-black-magic on | off | toggle` (no argument: toggle):
+    /// every chord that opens Black Magic.
     pub fn set_cmd_chord(&mut self, wid: &str, arg: &str) {
         let on = match arg.trim().to_lowercase().as_str() {
             "on" | "true" | "1" => true,
@@ -1326,7 +1345,7 @@ impl App {
         };
         self.cmd_chord_on = on;
         crate::settings::set("command_to_black_magic", on);
-        self.toast(wid, if on { "Left ⌘ + right ⌘ opens Black Magic: on" } else { "Left ⌘ + right ⌘ opens Black Magic: off" }, false);
+        self.toast(wid, if on { "⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ open Black Magic: on" } else { "⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ open Black Magic: off" }, false);
     }
 
     /// A helper's name for `set-helper` and the settings: the plugin's name
@@ -1347,13 +1366,21 @@ impl App {
         })
     }
 
+    /// The registered helper with the highest `priority`: the one that
+    /// gets Black Magic lines matching no command.
+    pub fn top_agent(&self) -> Option<zenteru_term::api::Registration> {
+        let regs = self.api.as_ref()?.registrations("agent");
+        regs.into_iter().max_by_key(|r| r.params.get("priority").as_i64().unwrap_or(0))
+    }
+
     /// Which helper ⌥ + ⌥ opens: the default if it's running, else the one
-    /// used last, else hmxv, else none.
+    /// used last, else the one with the highest priority, else none.
     pub fn pick_agent(&self) -> Option<zenteru_term::api::Registration> {
-        [self.default_agent.as_deref(), self.recent_agent.as_deref(), Some("hmxv")]
+        [self.default_agent.as_deref(), self.recent_agent.as_deref()]
             .into_iter()
             .flatten()
             .find_map(|n| self.find_agent(n))
+            .or_else(|| self.top_agent())
     }
 
     pub fn note_agent_used(&mut self, reg: &zenteru_term::api::Registration) {
@@ -1403,7 +1430,7 @@ impl App {
                 let msg = if rest.is_empty() || rest.eq_ignore_ascii_case("none") {
                     self.default_agent = None;
                     crate::settings::set("default_agent", Json::Null);
-                    "Default agentic helper cleared: recently used, then hmxv".to_string()
+                    "Default agentic helper cleared: recently used, then highest priority".to_string()
                 } else {
                     let running = self.find_agent(rest).map(|r| self.agent_name(&r));
                     let name = running.clone().unwrap_or_else(|| rest.to_string());
@@ -1424,7 +1451,7 @@ impl App {
         };
         self.opt_chord_on = on;
         crate::settings::set("option_to_agent", on);
-        self.toast(wid, if on { "Left ⌥ + right ⌥ opens the agentic helper: on" } else { "Left ⌥ + right ⌥ opens the agentic helper: off" }, false);
+        self.toast(wid, if on { "Left ⌥ + right ⌥ opens the agentic helper, if there is one: on" } else { "Left ⌥ + right ⌥ opens the agentic helper: off" }, false);
     }
 
     /// `@trim`: strip whitespace around the command line being typed. zsh
@@ -3208,7 +3235,7 @@ impl App {
                 ok(result)
             }
             // Test hooks: drive zenteru's own keyboard path. Only with ZENTERU_DEBUG.
-            "debug.type" | "debug.key" | "debug.state" | "debug.zoom" | "debug.pad_append" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
+            "debug.type" | "debug.key" | "debug.flags" | "debug.state" | "debug.zoom" | "debug.pad_append" if std::env::var_os("ZENTERU_DEBUG").is_some() => {
                 let wid = p.get("window_id").as_str().map(String::from).or_else(|| self.windows.first().map(|w| w.id.clone()));
                 let Some(wid) = wid else { return Some(Err(("not_found", "no window".into()))) };
                 match method {
@@ -3217,6 +3244,10 @@ impl App {
                         for g in zenteru_text::seg::graphemes(&t) {
                             self.insert_text(&wid, g);
                         }
+                    }
+                    "debug.flags" => {
+                        // Raw modifierFlags, one change per call: the chords.
+                        self.modifier_flags(&wid, p.get("flags").as_i64().unwrap_or(0).max(0) as u64);
                     }
                     "debug.pad_append" => {
                         let pid = self.windows.iter().find(|w| w.id == wid).and_then(|w| w.panel.clone());
@@ -3404,7 +3435,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str, &str)] = &[
     ("zenteru.prev_tab", "Previous Tab", "prev-tab"),
     ("zenteru.clear", "Clear Scrollback", "clear"),
     ("zenteru.trim", "Trim spaces around the typed command", "trim"),
-    ("zenteru.command_to_black_magic", "Both ⌘ keys open Black Magic: on | off | toggle", "command-to-black-magic"),
+    ("zenteru.command_to_black_magic", "⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ open Black Magic: on | off | toggle", "command-to-black-magic"),
     ("zenteru.option_to_agent", "Both ⌥ keys open the agentic helper: on | off | toggle | set-helper NAME", "option-to-agent"),
     ("zenteru.bigger", "Bigger Text", "bigger"),
     ("zenteru.smaller", "Smaller Text", "smaller"),

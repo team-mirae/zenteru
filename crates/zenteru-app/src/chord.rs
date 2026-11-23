@@ -1,8 +1,10 @@
-//! Both-modifier chords: left ⌘ + right ⌘ opens Black Magic, left ⌥ +
-//! right ⌥ opens the agentic helper. Both keys pressed, then released, with
-//! no other key, click or modifier in between. They fire on release, so
-//! ordinary shortcuts, which always involve another key, are neither
-//! affected nor delayed, and a double tap (one key at a time) never fires.
+//! Modifier chords: left ⌘ + right ⌘ opens Black Magic, and so does ⌥ + ⌘
+//! (either side: for keyboards with one ⌘). Left ⌥ + right ⌥ opens the
+//! agentic helper, or Black Magic when there is none. Both keys pressed,
+//! then released, with no other key, click or modifier in between. They
+//! fire on release, so ordinary shortcuts, which always involve another
+//! key, are neither affected nor delayed, and a double tap (one key at a
+//! time) never fires.
 
 /// Device-dependent bits of NSEvent.modifierFlags (IOKit's
 /// NX_DEVICE{L,R}{CMD,ALT}KEYMASK): which of the pair is down.
@@ -18,6 +20,7 @@ const COMMAND: u64 = 1 << 20;
 
 #[derive(Debug)]
 pub struct Chord {
+    /// The two keys, as masks: any bit of each counts as that key down.
     left: u64,
     right: u64,
     /// Modifiers that make it something else (⌘⇧, ⌥⌘, …).
@@ -37,6 +40,11 @@ impl Chord {
 
     pub fn option() -> Self {
         Self::new(LEFT_OPT, RIGHT_OPT, SHIFT | CONTROL | COMMAND)
+    }
+
+    /// ⌥ + ⌘, whichever side each is on.
+    pub fn option_command() -> Self {
+        Self::new(LEFT_OPT | RIGHT_OPT, LEFT_CMD | RIGHT_CMD, SHIFT | CONTROL)
     }
 
     fn new(left: u64, right: u64, others: u64) -> Self {
@@ -165,5 +173,29 @@ mod tests {
         let mut c = Chord::command();
         assert!(!run(&mut c, &[LO, LO | RO, 0]));
         assert!(!run(&mut o, &[L, L | R, 0]));
+    }
+
+    #[test]
+    fn option_command_on_any_side() {
+        let mut oc = Chord::option_command();
+        assert!(run(&mut oc, &[LO, LO | L, L, 0]));
+        assert!(run(&mut oc, &[L, L | LO, 0]));
+        assert!(run(&mut oc, &[RO, RO | R, 0]));
+        assert!(run(&mut oc, &[R, R | LO, LO, 0]));
+        // One of them alone, or a pair of the same key, isn't it.
+        assert!(!run(&mut oc, &[LO, 0]));
+        assert!(!run(&mut oc, &[L, 0]));
+        assert!(!run(&mut oc, &[L, L | R, 0]));
+        assert!(!run(&mut oc, &[LO, LO | RO, 0]));
+        // ⌥⌘ with a key (⌥⌘←) or with ⇧ is a shortcut.
+        oc.flags(LO);
+        oc.flags(LO | L);
+        oc.other_input();
+        assert!(!run(&mut oc, &[L, 0]));
+        assert!(!run(&mut oc, &[LO, LO | L | SHIFT, LO | L, 0]));
+        // ⌥ + ⌘ spoils the same-key chords, so only one of the three fires.
+        let (mut c, mut o) = (Chord::command(), Chord::option());
+        assert!(!run(&mut c, &[L, L | R, L | R | LO, 0]));
+        assert!(!run(&mut o, &[LO, LO | RO, LO | RO | L, 0]));
     }
 }

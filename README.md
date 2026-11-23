@@ -50,26 +50,29 @@ plugin API. The name is [zencode](https://github.com/team-mirae/zencode) +
     square.
 - **Black Magic.** Type `@` at an empty prompt (local or over ssh), or in
   vim's normal mode, or press ⌘⇧P. Known commands run (`@new-tab`,
-  `@line-numbers`, plugin commands), and anything else goes to the agentic
-  helper (hmxv): `@why did -3 fail?`. `@help` and `@hmxv` belong to hmxv,
-  and `@@` types a literal `@`. `@trim` (⌘⇧P while typing) strips the
+  `@line-numbers`, plugin commands), and anything else goes to an agentic
+  helper if you have one installed: `@why did -3 fail?`. `@@` types a
+  literal `@`. `@trim` (⌘⇧P while typing) strips the
   spaces around the command you're typing. Holding left ⌘ and right ⌘
   together, then letting go with no other key in between, opens or closes
   Black Magic anywhere (not a double tap: both keys have to be down at
-  once). It's on by default; turn it off with
+  once). ⌥ + ⌘ held and released the same way does it too, for keyboards
+  with one ⌘, and so does left ⌥ + right ⌥ unless you have an agentic
+  helper. The chords are on by default; turn them off with
   `@command-to-black-magic off` (`on`, or `toggle` with no argument) or
-  View → Left ⌘ + Right ⌘ Opens Black Magic.
+  View → ⌘ + ⌘, ⌥ + ⌘ and ⌥ + ⌥ Open Black Magic.
 - **Agentic helpers.** Left ⌥ + right ⌥ (held together, then released)
   opens your agentic helper: the default you set with
   `@option-to-agent set-helper NAME`, else the one you used last, else
-  hmxv. Pressed with a side panel focused, it goes back to the terminal.
-  `@option-to-agent on|off|toggle` and a View menu item switch it (on by
-  default). Build your own helper with
+  the one with the highest priority. Pressed with a side panel focused, it
+  goes back to the terminal. `@option-to-agent on|off|toggle` and a View
+  menu item switch it (on by default). With it off, or with no helper
+  installed, the chord opens Black Magic instead. zenteru doesn't bundle a
+  helper: build your own with
   [docs/AGENTIC_HELPERS.md](docs/AGENTIC_HELPERS.md).
 - **Line references.** In shell mode a gutter shows ゼロ, -1, -2 … counting
   up from the cursor's line, plus a 3-character code per line taken from a
-  UUIDv7 stamped when the line arrived. You can cite either one to hmxv or
-  to plugins.
+  UUIDv7 stamped when the line arrived. You can cite either one to plugins.
   While another program has the terminal (Claude Code, vim, a build), the
   gutter shows zencode-gradient rain instead, which becomes a still gradient
   with Reduce Motion on. A 24-hour clock and the date sit at the bottom.
@@ -134,7 +137,10 @@ curl -fsSL https://raw.githubusercontent.com/team-mirae/zenteru/main/install.sh 
 
 `zenteru` opens the app (or focuses it), `zenteru FILE|DIR…` runs scripts
 in new tabs and opens shells in folders, and `zenteru sudo-auth` turns on
-Touch ID or YubiKey for sudo. zenteru is listed under Finder's Open With
+Touch ID or YubiKey for sudo. `zenteru update` runs the installer again
+over the copy you have (`zenteru update v0.1.28` for a particular release,
+`--force` to reinstall), and says what's wrong when it can't: no network, a
+proxy or sign-in page in the way, a folder it can't write to. zenteru is listed under Finder's Open With
 for shell scripts; Get Info → Change All makes it the default. Builds are on the
 [releases page](https://github.com/team-mirae/zenteru/releases). macOS 13
 or later is required.
@@ -152,7 +158,6 @@ Bundled plugins:
 
 | Plugin | What it does |
 |---|---|
-| **hmxv** ("help me exit vim") | An AI agent in a side panel. It reads and writes the terminal, has plan and execute modes, and works with Anthropic, OpenAI, Gemini, xAI Grok, OpenRouter or a local OpenAI-compatible server. ⌘⇧H opens it. See [docs/HMXV.md](docs/HMXV.md). |
 | **fileholder** | Holds dropped or pasted screenshots and files in a per-launch 0700 directory that is removed when zenteru quits, and types their paths. Claude Code can use a screenshot without it ever being saved. |
 | **setenvvar** | Session environment variables that apply to every command you type, but never to the prompt's own environment, your shell history, or commands sent by plugins. |
 | **holdmytext** | A scratchpad on the right (`@holdmytext`): plaintext on top, secrets (shown as ●, never copied) below, each with *Append all to terminal* and *Append selection to terminal*. Text is kept in memory only, shared by all windows, and gone when zenteru quits. |
@@ -173,7 +178,6 @@ cargo run -p zenteru-app          # straight from the source tree
 scripts/bundle.sh                 # dist/zenteru.app, signed with your Apple Development identity
 cargo test --workspace            # Rust tests (including a real zsh end-to-end test)
 python3 -m unittest discover -s python/tests
-python3 -m unittest discover -s plugins/hmxv/tests
 python3 -m unittest discover -s plugins/complete/tests
 ```
 
@@ -194,9 +198,9 @@ crates/zenteru-text   letterblocks, widths (vendored from zencode @ 815657f), pa
 crates/zenteru-term   VT parser, grid + reflow, pty, key/mouse encoding, sessions, JSON, plugin API server
 crates/zenteru-app    AppKit + Metal + CoreText app (tabs, panels, IME, overlays)
 python/zenteru        plugin client package       python/iterm2   iTerm2 compatibility shim
-plugins/              hmxv, fileholder, setenvvar, holdmytext, complete
+plugins/              fileholder, setenvvar, holdmytext, complete
 shell/                zsh / bash integration
-docs/                 PROTOCOL, PYTHON_API, HMXV, IME_CONTRACT
+docs/                 PROTOCOL, PYTHON_API, AGENTIC_HELPERS, IME_CONTRACT
 ```
 
 ## License

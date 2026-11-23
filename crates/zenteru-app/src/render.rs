@@ -2,6 +2,7 @@
 //! panels, menus — is one instanced draw of quads:
 //!
 //! * solid / gradient rectangles with optional rounded corners,
+//! * concave corners (the curved feet of the active tab),
 //! * gradient borders (the zencode pink → violet ring for password fields),
 //! * glyphs from a BGRA atlas, tinted (optionally along a gradient) or, for
 //!   colour emoji, drawn as is.
@@ -31,7 +32,7 @@ struct Inst {
     float4 uv;      // u0, v0, u1, v1
     float4 color;
     float4 color2;
-    float4 extra;   // grad_x0, grad_x1, border thickness, -
+    float4 extra;   // grad_x0, grad_x1, border thickness, concave corner side
     uint kind;
     float radius;
     float2 pad;
@@ -86,7 +87,12 @@ fragment float4 fmain(VOut v [[stage_in]], texture2d<float> atlas [[texture(0)]]
         c = grad(v, (v.px_x - v.extra.x) / (v.extra.y - v.extra.x));
     }
     float mask = 1.0;
-    if (v.radius > 0.0 || v.kind == 4) {
+    if (v.kind == 6) {
+        // Concave corner: the rect minus a circle centred on one of its
+        // top corners (extra.w: -1 left, +1 right).
+        float2 centre = float2(v.extra.w * v.half_size.x, -v.half_size.y);
+        mask = clamp(length(v.local - centre) - v.radius + 0.5, 0.0, 1.0);
+    } else if (v.radius > 0.0 || v.kind == 4) {
         float d = sdf_round_rect(v.local, v.half_size, v.radius);
         mask = clamp(0.5 - d, 0.0, 1.0);
         if (v.kind == 4) {
@@ -184,6 +190,14 @@ impl Frame {
         if w > 0.0 && h > 0.0 {
             self.insts.push(Inst { rect: [x, y, w, h], color: top, color2: bottom, kind: 5, radius: r, ..Default::default() });
         }
+    }
+
+    /// A square of side `size` minus a circle of that radius centred on its
+    /// top-left corner (or top-right, with `right`): the outward curve at
+    /// the foot of the active tab. Nothing is painted inside the circle.
+    pub fn concave_corner(&mut self, x: f32, y: f32, size: f32, right: bool, color: Rgba) {
+        let side = if right { 1.0 } else { -1.0 };
+        self.insts.push(Inst { rect: [x, y, size, size], color, extra: [0.0, 0.0, 0.0, side], kind: 6, radius: size, ..Default::default() });
     }
 
     /// Rounded border of thickness `t`, coloured along a horizontal gradient.

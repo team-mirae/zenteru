@@ -1,5 +1,5 @@
-//! Line references for the shell-mode gutter, so people and plugins (hmxv)
-//! can point at lines:
+//! Line references for the shell-mode gutter, so people and plugins can
+//! point at lines:
 //!
 //! * **Relative index**: the cursor's line is `ゼロ` (0); lines above it are
 //!   -1, -2, -3, … counting upward, into scrollback.

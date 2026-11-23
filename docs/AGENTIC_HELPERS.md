@@ -2,9 +2,9 @@
 
 An **agentic helper** is a plugin that answers in plain language and can act
 on the terminal: it reads what's on screen, explains it, and types keys for
-you. [hmxv](HMXV.md) ("help me exit vim") is the bundled one. This guide
-shows how to build your own, from a 100-line working helper up to the
-details hmxv gets right.
+you. zenteru doesn't bundle one. This guide shows how to build your own,
+from a 100-line working helper up to the details that make one safe to
+leave enabled.
 
 Contents:
 [How users reach a helper](#how-users-reach-a-helper) ·
@@ -23,7 +23,7 @@ Contents:
 | | What zenteru does | What your helper gets |
 |---|---|---|
 | **Black Magic line**: `@why did -3 fail?` | A line that matches no command goes to the registered helper with the highest `priority`. | `text` = the line, `source: "black_magic"` |
-| **Left ⌥ + right ⌥**: both Option keys held together, then released with nothing else pressed | Opens a helper: the default set with `@option-to-agent set-helper NAME` if it's running, else the one used most recently, else hmxv, else nothing. With a side panel focused it returns focus to the terminal instead. | `text` = `""`, `source: "open"`: show your UI, ask nothing |
+| **Left ⌥ + right ⌥**: both Option keys held together, then released with nothing else pressed | Opens a helper: the default set with `@option-to-agent set-helper NAME` if it's running, else the one used most recently, else the one with the highest `priority`. With no helper running (or `@option-to-agent off`) it opens Black Magic. With a side panel focused it returns focus to the terminal instead. | `text` = `""`, `source: "open"`: show your UI, ask nothing |
 | **Your own commands**: `@yourname …`, a keybinding, the Plugins menu | Whatever you register with `Command`. | a `CommandInvocation` |
 
 A helper's **name** is the name its connection says hello with. That's the
@@ -34,8 +34,8 @@ are accepted too.
 
 `@option-to-agent on|off|toggle` turns the ⌥ chord on and off (it's on by
 default). `set-helper` with no name clears the default. Black Magic lines
-still go by `priority`: hmxv registers with `priority=10`, so use a higher
-number if your helper should take those lines while hmxv is enabled.
+always go by `priority`: with several helpers installed, the highest number
+takes them.
 
 ## Anatomy of a helper
 
@@ -72,7 +72,7 @@ arriving) before connecting a model. Replace it as described in
 [Connecting a model](#connecting-a-model).
 
 ```python
-"""tinyhelper: a minimal hmxv-style agentic helper for zenteru."""
+"""tinyhelper: a minimal agentic helper for zenteru."""
 
 import asyncio
 from typing import Optional
@@ -244,9 +244,9 @@ and restart zenteru (plugins start at launch). Then:
 
 Send the model the screen plus a little context (cwd, last command, exit
 status, foreground job, `alt_screen`). That's usually enough to identify
-the program and the state it's in. hmxv's `read_screen`,
-`get_prompt_state` and `wait_for_output` tools (in
-`plugins/hmxv/hmxv/terminal.py`) are a good model to copy.
+the program and the state it's in. If your model calls tools,
+`read_screen`, `get_prompt_state` and `wait_for_output` built on these
+calls are a good set to start with.
 
 ## Acting on it
 
@@ -257,21 +257,21 @@ the program and the state it's in. hmxv's `read_screen`,
   you type.
 * **Plan before acting.** Show proposed keys with **Run / Skip** buttons
   (`actions=[("run", "Run"), ("skip", "Skip")]`, answered by `action`
-  events) and send nothing until Run is clicked. hmxv also offers
+  events) and send nothing until Run is clicked. You can also offer
   **Edit…**, which puts `/send <keys>` in the input box to change first:
   `await conn.async_call("panel.set_input", {"panel_id": panel.panel_id, "text": "/send " + keys})`.
 * **Execute mode** sends directly. Panels can show a mode switch
   (`modes=["plan", "execute"]`), and `panel.mode` tracks the user's choice.
 * **Loop:** send, wait for the output to settle or the prompt to return,
   read the screen again, decide the next step. Give up after a bounded
-  number of steps, and let the user stop you (hmxv's `/stop`).
+  number of steps, and let the user stop you (a `/stop` command in the panel, say).
 * **Stream** long answers by appending once and calling `async_update` on
   that message as text arrives. Use `blocks` for code, images or progress
   bars ([rich panel content](PYTHON_API.md#rich-panel-content)).
 
 ## Safety rules
 
-These are what make a helper safe to leave enabled. hmxv follows all of them.
+These are what make a helper safe to leave enabled.
 
 1. **Never type while a password is being asked for.** Check
    `password_mode` right before *every* write, including after the user
@@ -280,15 +280,14 @@ These are what make a helper safe to leave enabled. hmxv follows all of them.
    active, but don't rely on that alone.
 2. **Never send a password line to a model.** Lines with `password: true`
    hold a prompt being answered right now. Blank them, as `read_terminal`
-   does above. hmxv also remembers which lines were at the cursor while
-   `password_mode` was on, and keeps redacting them afterwards.
+   does above. Better still, remember which lines were at the cursor while
+   `password_mode` was on, and keep redacting them afterwards.
 3. **Ask before anything destructive, in every mode.** Keep a denylist
    (`rm -rf`, `sudo`, `dd`, `git push --force`, `git reset --hard`, SQL
-   `DROP`…) that always needs approval. hmxv's list is in
-   `plugins/hmxv/hmxv/safety.py`.
+   `DROP`…) that always needs approval.
 4. **Redact secrets** that show up on screen (API keys, tokens) before they
-   go to a model. hmxv has `known_secrets` and `redact_patterns` in its
-   config.
+   go to a model. Let users list known secrets and redaction patterns in
+   your config.
 5. **Don't log screen contents** or keep conversations on disk unless the
    user opted in.
 6. **Answer zenteru at once.** `AgentHelper` and `Command` handlers are
@@ -303,17 +302,13 @@ inside `asyncio.to_thread(...)` so the event loop keeps running. In outline:
 
 1. A **system prompt** describing the job and the keys format, and the
    terminal context from `read_terminal`.
-2. **Tools** for the model, rather than parsing free text: hmxv gives it
+2. **Tools** for the model, rather than parsing free text: for example
    `read_screen`, `get_prompt_state`, `send_keys(text, explain)`,
-   `wait_for_output(seconds, until_prompt)` and `finish(summary)`, and runs
-   the tool loop itself, so every `send_keys` passes the plan-mode and
-   safety checks above.
+   `wait_for_output(seconds, until_prompt)` and `finish(summary)`. Run the
+   tool loop yourself, so every `send_keys` passes the plan-mode and safety
+   checks above.
 3. **API keys** from the environment or the macOS Keychain (`security
    find-generic-password`), never from files in the plugin directory.
-
-hmxv's providers (`plugins/hmxv/hmxv/providers/`) implement this for
-Anthropic, OpenAI, Gemini, xAI, OpenRouter and OpenAI-compatible local
-servers, including streaming and tool calls. Start from one of them.
 
 ## Without Python: the wire protocol
 
@@ -352,8 +347,8 @@ in `ZENTERU_API_SOCKET`.
 * **Unit tests without zenteru:** `python/tests/mock_server.py` is a fake
   zenteru server that the `zenteru` package's own tests use. It can call
   your handlers like zenteru would (`server.invoke(handler, args)`) and
-  records panel calls. hmxv's tests (`plugins/hmxv/tests/`) use a similar
-  fake, with a scripted model provider in place of a real one.
+  records panel calls. Put a scripted model in place of the real one, so
+  the tests need no network.
 * **Against the real app**, without restarting: run the script from a
   zenteru shell, which connects through the cookie file:
   `PYTHONPATH=/Applications/zenteru.app/Contents/Resources/python python3 main.py`

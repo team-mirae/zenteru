@@ -315,7 +315,7 @@ AgentHandler = Callable[..., Awaitable[Any]]
 
 
 class AgentHelper(_Registration):
-    """Marks this plugin as an agentic helper (like hmxv).
+    """Marks this plugin as an agentic helper.
 
     A line typed in Black Magic (``@…``) that is not a known command is
     handed to the helper with the highest ``priority``::

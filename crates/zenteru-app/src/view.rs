@@ -6,17 +6,18 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSColor, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSMenu, NSMenuItem,
+    NSColor, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType, NSMenu, NSMenuItem,
     NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSResponder,
     NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWindowTabbingMode, NSWindowButton, NSWindowCollectionBehavior, NSAutoresizingMaskOptions,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSAttributedStringKey, NSNotification, NSPoint, NSRange, NSRect, NSSize, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSNotification, NSPoint, NSRange, NSRect, NSSize, NSString,
     NSTimer, NSRunLoop, NSRunLoopCommonModes, NSUInteger, NSNotFound, NSUserDefaults, NSURL,
 };
 use objc2_quartz_core::CAMetalLayer;
@@ -253,8 +254,201 @@ define_class!(
         fn can_become_main(&self) -> bool {
             true
         }
+
+        // A press on the window's edge resizes it (see `edges_at`); it
+        // never reaches the views or AppKit's own, much thinner, band.
+        #[unsafe(method(sendEvent:))]
+        fn send_event(&self, event: &NSEvent) {
+            if event.r#type() == NSEventType::LeftMouseDown {
+                let edges = window_edges(self, event);
+                if edges != 0 {
+                    resize_drag(self, edges);
+                    return;
+                }
+            }
+            unsafe { msg_send![super(self), sendEvent: event] }
+        }
     }
 );
+
+// ---------------------------------------------------------------------
+// Resizing by the window's edges
+// ---------------------------------------------------------------------
+//
+// The window is borderless, and AppKit gives such a window only a hairline
+// to resize by, with no cursor to show where it is. So the edges are ours:
+// a band inside the frame, longer at the corners, with the matching cursor.
+
+const EDGE_L: u8 = 1;
+const EDGE_R: u8 = 2;
+const EDGE_B: u8 = 4;
+const EDGE_T: u8 = 8;
+/// Width of the resize band inside the frame, in points.
+const EDGE_PT: f64 = 6.0;
+/// How far along an edge its corner reaches, in points.
+const CORNER_PT: f64 = 18.0;
+/// Presses just outside the frame (if the system delivers any) count too.
+const EDGE_OUT_PT: f64 = 8.0;
+
+thread_local! {
+    /// The edges whose resize cursor is showing (0: none).
+    static EDGE_CURSOR: Cell<u8> = const { Cell::new(0) };
+}
+
+/// The edges a point resizes, for a window of `w` × `h` points; `x`, `y`
+/// from the bottom-left corner. 0 anywhere else.
+fn edges_at(x: f64, y: f64, w: f64, h: f64) -> u8 {
+    if x < -EDGE_OUT_PT || y < -EDGE_OUT_PT || x >= w + EDGE_OUT_PT || y >= h + EDGE_OUT_PT {
+        return 0;
+    }
+    let mut e = 0;
+    if x < EDGE_PT {
+        e |= EDGE_L;
+    } else if x >= w - EDGE_PT {
+        e |= EDGE_R;
+    }
+    if y < EDGE_PT {
+        e |= EDGE_B;
+    } else if y >= h - EDGE_PT {
+        e |= EDGE_T;
+    }
+    if e & (EDGE_B | EDGE_T) != 0 {
+        if x < CORNER_PT {
+            e |= EDGE_L;
+        } else if x >= w - CORNER_PT {
+            e |= EDGE_R;
+        }
+    }
+    if e & (EDGE_L | EDGE_R) != 0 {
+        if y < CORNER_PT {
+            e |= EDGE_B;
+        } else if y >= h - CORNER_PT {
+            e |= EDGE_T;
+        }
+    }
+    e
+}
+
+/// The edges under a mouse event; none in full screen.
+fn window_edges(window: &NSWindow, event: &NSEvent) -> u8 {
+    let mask = window.styleMask();
+    if mask.contains(NSWindowStyleMask::FullScreen) || !mask.contains(NSWindowStyleMask::Resizable) {
+        return 0;
+    }
+    let p = event.locationInWindow();
+    let f = window.frame();
+    edges_at(p.x, p.y, f.size.width, f.size.height)
+}
+
+/// `f0` with `edges` moved by the pointer's travel, no smaller than `min`
+/// and with the top no higher than `top_max`.
+fn resized_frame(f0: NSRect, edges: u8, (dx, dy): (f64, f64), min: NSSize, top_max: Option<f64>) -> NSRect {
+    let (mut x0, mut y0) = (f0.origin.x, f0.origin.y);
+    let (mut x1, mut y1) = (x0 + f0.size.width, y0 + f0.size.height);
+    if edges & EDGE_L != 0 {
+        x0 = (x0 + dx).min(x1 - min.width);
+    } else if edges & EDGE_R != 0 {
+        x1 = (x1 + dx).max(x0 + min.width);
+    }
+    if edges & EDGE_B != 0 {
+        y0 = (y0 + dy).min(y1 - min.height);
+    } else if edges & EDGE_T != 0 {
+        y1 = (y1 + dy).max(y0 + min.height);
+        if let Some(t) = top_max {
+            y1 = y1.min(t.max(y0 + min.height));
+        }
+    }
+    NSRect::new(NSPoint::new(x0.round(), y0.round()), NSSize::new((x1 - x0).round(), (y1 - y0).round()))
+}
+
+/// Follow the pointer until the button is released, like AppKit's own live
+/// resize: a nested loop, with the tick timer (common modes) still drawing.
+fn resize_drag(window: &NSWindow, edges: u8) {
+    let mtm = mtm();
+    let app = NSApplication::sharedApplication(mtm);
+    if !window.isKeyWindow() {
+        window.makeKeyAndOrderFront(None);
+    }
+    edge_cursor(edges).set();
+    EDGE_CURSOR.with(|c| c.set(edges));
+    let start = NSEvent::mouseLocation();
+    let f0 = window.frame();
+    let min = window.minSize();
+    // Keep the bar (the only handle to move the window by) below the menu bar.
+    let top_max = window.screen().map(|s| {
+        let v = s.visibleFrame();
+        (v.origin.y + v.size.height).max(f0.origin.y + f0.size.height)
+    });
+    let mask = NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp;
+    loop {
+        let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(mask, Some(&NSDate::distantFuture()), unsafe { NSEventTrackingRunLoopMode }, true);
+        let Some(event) = event else { break };
+        if event.r#type() == NSEventType::LeftMouseUp {
+            break;
+        }
+        let m = NSEvent::mouseLocation();
+        let f = resized_frame(f0, edges, (m.x - start.x, m.y - start.y), min, top_max);
+        if f != window.frame() {
+            window.setFrame_display(f, true);
+        }
+    }
+}
+
+/// The resize cursor for a set of edges.
+#[allow(deprecated)]
+fn edge_cursor(edges: u8) -> Retained<NSCursor> {
+    let horizontal = edges & (EDGE_L | EDGE_R) != 0;
+    let vertical = edges & (EDGE_B | EDGE_T) != 0;
+    let meta = NSCursor::class().metaclass();
+    // macOS 15 has cursors for every edge and corner.
+    if meta.responds_to(sel!(frameResizeCursorFromPosition:inDirections:)) {
+        let l = edges & EDGE_L != 0;
+        let t = edges & EDGE_T != 0;
+        let position = match (horizontal, vertical) {
+            (true, true) => match (l, t) {
+                (true, true) => NSCursorFrameResizePosition::TopLeft,
+                (false, true) => NSCursorFrameResizePosition::TopRight,
+                (true, false) => NSCursorFrameResizePosition::BottomLeft,
+                (false, false) => NSCursorFrameResizePosition::BottomRight,
+            },
+            (true, false) if l => NSCursorFrameResizePosition::Left,
+            (true, false) => NSCursorFrameResizePosition::Right,
+            _ if t => NSCursorFrameResizePosition::Top,
+            _ => NSCursorFrameResizePosition::Bottom,
+        };
+        return NSCursor::frameResizeCursorFromPosition_inDirections(position, NSCursorFrameResizeDirections::All);
+    }
+    if horizontal && vertical {
+        // Older systems only have the diagonal arrows privately.
+        let falling = (edges & EDGE_L != 0) == (edges & EDGE_T != 0);
+        let sel = if falling { sel!(_windowResizeNorthWestSouthEastCursor) } else { sel!(_windowResizeNorthEastSouthWestCursor) };
+        if meta.responds_to(sel) {
+            let c: Option<Retained<NSCursor>> = unsafe { msg_send![NSCursor::class(), performSelector: sel] };
+            if let Some(c) = c {
+                return c;
+            }
+        }
+    }
+    if vertical && !horizontal { NSCursor::resizeUpDownCursor() } else { NSCursor::resizeLeftRightCursor() }
+}
+
+/// Show the resize cursor while the pointer is on an edge. True when it
+/// is, and the hover is not the content's business.
+fn edge_hover(window: &NSWindow, event: &NSEvent) -> bool {
+    let edges = window_edges(window, event);
+    if edges != EDGE_CURSOR.with(Cell::get) {
+        EDGE_CURSOR.with(|c| c.set(edges));
+        if edges != 0 { edge_cursor(edges).set() } else { NSCursor::arrowCursor().set() }
+    }
+    edges != 0
+}
+
+/// The pointer left the window: no edge is hovered any more.
+fn edge_leave() {
+    if EDGE_CURSOR.with(|c| c.replace(0)) != 0 {
+        NSCursor::arrowCursor().set();
+    }
+}
 
 pub fn run_alert(title: &str, body: &str, buttons: &[String]) -> i64 {
     let alert = NSAlert::new(mtm());
@@ -377,11 +571,15 @@ define_class!(
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
+            if self.window().is_some_and(|w| edge_hover(&w, event)) {
+                return;
+            }
             self.on_mouse(event, MouseButton::None, MouseAction::Motion);
         }
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
+            edge_leave();
             let wid = self.wid();
             with_app(|a| {
                 if let Some(w) = a.win(&wid) {
@@ -752,9 +950,9 @@ fn mouse(a: &mut App, wid: &str, x: f32, y: f32, btn: MouseButton, action: Mouse
             a.windows[wi].edge_hover = over;
             a.windows[wi].dirty = true;
             if over {
-                objc2_app_kit::NSCursor::resizeLeftRightCursor().set();
+                NSCursor::resizeLeftRightCursor().set();
             } else {
-                objc2_app_kit::NSCursor::arrowCursor().set();
+                NSCursor::arrowCursor().set();
             }
         }
     }
@@ -1288,4 +1486,46 @@ pub fn run(open: Vec<std::path::PathBuf>) {
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
     app.run();
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn edges_cover_the_band_and_corners() {
+        let (w, h) = (980.0, 620.0);
+        assert_eq!(edges_at(490.0, 310.0, w, h), 0);
+        assert_eq!(edges_at(EDGE_PT, 310.0, w, h), 0);
+        assert_eq!(edges_at(2.0, 310.0, w, h), EDGE_L);
+        assert_eq!(edges_at(w - 1.0, 310.0, w, h), EDGE_R);
+        assert_eq!(edges_at(490.0, 0.0, w, h), EDGE_B);
+        assert_eq!(edges_at(490.0, h - 3.0, w, h), EDGE_T);
+        // A corner reaches along both of its edges.
+        assert_eq!(edges_at(2.0, 12.0, w, h), EDGE_L | EDGE_B);
+        assert_eq!(edges_at(12.0, 2.0, w, h), EDGE_L | EDGE_B);
+        assert_eq!(edges_at(w - 12.0, h - 2.0, w, h), EDGE_R | EDGE_T);
+        assert_eq!(edges_at(12.0, 12.0, w, h), 0);
+        // Just outside still counts; far outside does not.
+        assert_eq!(edges_at(-3.0, 310.0, w, h), EDGE_L);
+        assert_eq!(edges_at(-30.0, 310.0, w, h), 0);
+        // The traffic lights are clear of the band.
+        assert_eq!(edges_at(13.0, h - 12.0, w, h), 0);
+    }
+
+    #[test]
+    fn frames_follow_the_pointer_within_limits() {
+        let f0 = NSRect::new(NSPoint::new(100.0, 100.0), NSSize::new(800.0, 600.0));
+        let min = NSSize::new(420.0, 240.0);
+        let r = |e, d| resized_frame(f0, e, d, min, Some(900.0));
+        let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        assert_eq!(r(EDGE_R, (50.0, 99.0)), rect(100.0, 100.0, 850.0, 600.0));
+        assert_eq!(r(EDGE_L, (50.0, 99.0)), rect(150.0, 100.0, 750.0, 600.0));
+        assert_eq!(r(EDGE_L | EDGE_B, (-10.0, -20.0)), rect(90.0, 80.0, 810.0, 620.0));
+        // The opposite edge stays put at the minimum size.
+        assert_eq!(r(EDGE_L, (9999.0, 0.0)), rect(480.0, 100.0, 420.0, 600.0));
+        assert_eq!(r(EDGE_T, (0.0, -9999.0)), rect(100.0, 100.0, 800.0, 240.0));
+        // The top stops under the menu bar.
+        assert_eq!(r(EDGE_T, (0.0, 9999.0)), rect(100.0, 100.0, 800.0, 800.0));
+    }
 }
